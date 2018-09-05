@@ -1,0 +1,238 @@
+#!/usr/bin/perl
+
+# Author: Andrew Theurer
+# The purpose of this script is to show latency between a cpu exiting user mode, running in kernel mode, then switching back
+#
+# usage: ftrace-postprocess <dir> [buffer_size processing_rate_mpps incoming_rate_mpps]
+#        required: dir = directory where ftrace-report-stdout.txt can be found
+#        optional: buffer_size = The simulated buffer size, number of descriptors (packets).  For refernce, virtio is 256, some physical adapters are ~2048
+#        	   processing_rate_mpps = This is how fast packets can be processed if there are no interruptions, in Mpps.  For reference, vhostuser could be ~4
+#		   incoming_rate_mpps = This is how fast packets are being received, in Mpps, as determined by your packet generator.
+#					This should always be lower than the packet_processing_rate
+#
+# These 3 options are for "buffer simulation" post-processing only.  The premise is that a user program is processing incoming packets and
+# can process X Mpps continuously, unless there is an interruption by the kernel.  When there is an interruption, the buffer usage increases based
+# on the length of the interruption and the incoming packet rate.  During this interruption, the percentage of the buffer used increases.  If the 
+# interruption is long enough and the buffer is already mostly used, the buffer may become full and a "OVERFLOW" error is noted.  Alternatively,
+# when there is no interruption the buffer usage can be reduced since the packet processing rate should be higher than the incoming packet rate.
+# For each microsecond the user program is not interrupted, the buffer size is reduced.  Reducing the buffer to as low as 0 allows for future kernel
+# interruptions to be longer or more frequent with a less chance of OVERFLOW.
+
+
+use strict;
+use warnings;
+no warnings 'portable';
+
+use Data::Dumper;
+
+my $dir=$ARGV[0];
+my $max_buffer_size = $ARGV[1];
+my $packet_processing_rate = $ARGV[2];
+my $packet_incoming_rate = $ARGV[3];
+				 
+my $line;
+my %line_number;
+my %cpu_prev_exit_timestamp;
+my %cpu_prev_exit_function;
+my %cpu_prev_exit_line_number;
+
+my %cpu_prev_timestamp;
+my %cpu_prev_line_number;
+my %report_by_cpu;
+my %per_cpu_filehandles;
+my %vcpus;
+my %in_guest;
+my $vcpu_spacing;
+
+print "Generating per-cpu ftrace reports\n";
+open(FTRACE_REPORT, "$dir/ftrace-report-stdout.txt") || die "Could not open $dir/ftrace-report-stdout.txt";
+while ($line = <FTRACE_REPORT>) {
+	#           <...>-27622 [013] 20811282866675: funcgraph_entry:                   |            tick_sched_timer() {
+	#           <...>-27573 [005] 20811282866696: funcgraph_exit:         4.525 us   |    }
+	#           <...>-27621 [011] 20811282866824: funcgraph_exit:         0.045 us   |              }
+	#           <...>-27334 [027] 20811282866845: funcgraph_exit:         1.327 us   |          }
+	#           <...>-27574 [029] 20811282866940: funcgraph_exit:       #  0.482 us   |            }
+	#           <...>-27622 [013] 20811282866943: funcgraph_entry:                   |              ktime_get() {
+	#           <...>-27621 [011] 20811282867103: funcgraph_entry:                   |              tick_sched_do_timer() {
+	chomp $line;
+	if ( $line =~             /\s*(\S+)\s+\[(\d+)\]\s+(\d+):\sfuncgraph_(\w+):(.+)\|(\s+)(\S+).*/ ) {
+		my $thread = $1; #------|        |          |                 |    |      |    |
+		my $cpu = $2;    #---------------|          |                 |    |      |    |
+		my $timestamp_usec = $3/1000/2.58404; #-----|                 |    |      |    |
+		my $functype = $4; #------------------------------------------|    |      |    |
+		my $elapsed = $5;  #-----------------------------------------------|      |    |
+		my $spacing = $6;  #------------------------------------------------------|    |
+		my $function = $7; #-----------------------------------------------------------|
+		if (not defined $per_cpu_filehandles{$cpu}) {
+			mkdir("$dir/cpu-" . $cpu);
+			open($per_cpu_filehandles{$cpu}, ">$dir/cpu-$cpu/ftrace-report.txt") || die "Could not open $dir/cpu-$cpu/ftrace-report.txt for writing";
+		}
+		if (not defined $line_number{$cpu}) {
+			$line_number{$cpu} = 1;
+		}
+		$spacing =~ s/\s{2}//;
+		if ( $function =~ /vmx_vcpu_run/  and not defined $vcpus{$cpu} ) {
+			$vcpus{$cpu} = 1;
+			$in_guest{$cpu} = 0;
+			printf("found vmx_vcpu_run for cpu %d\n", $cpu);
+		}
+		if ( defined $vcpus{$cpu} ) { # CPU is running vcpu thread, so tracking guest<->host changes
+			#$line = $line . " vcpu: in_guest:$in_guest{$cpu}";
+			if ( $in_guest{$cpu} == 0 and $function =~ /vmx_vcpu_run/ ) {	# This marks transition from host to guest.  We
+								# can now log elapsed time of host as long as we
+								# have the timestamp from last time vmx_vcpu_run
+								# returned.
+				$in_guest{$cpu} = 1;
+				$vcpu_spacing = $spacing;
+				if ( $cpu_prev_exit_function{$cpu} ) { 
+					if (not defined $report_by_cpu{$cpu}) {
+						$report_by_cpu{$cpu} = ();
+					}
+					$elapsed = $timestamp_usec - $cpu_prev_exit_timestamp{$cpu};
+					my %record = (  "usec_in_preempt" => $elapsed,
+							"exit_function" => $cpu_prev_exit_function{$cpu},
+							"line_number_start" => $cpu_prev_exit_line_number{$cpu},
+							"line_number_end" => $cpu_prev_line_number{$cpu},
+							"sec_start" => $cpu_prev_exit_timestamp{$cpu},
+							"sec_end" => $cpu_prev_timestamp{$cpu} );
+					# Use this array later to created sorted output
+					push(@{ $report_by_cpu{$cpu} }, \%record );
+					$line = $line . " host->guest"
+				}
+
+			} elsif ( ($in_guest{$cpu} == 1) and ($spacing eq $vcpu_spacing) and ($function =~ /^\}/) ) {
+				# This marks when there was a transition from guest to host.
+				# Log the timestamp and line number, and store dummy value for function
+				$cpu_prev_exit_timestamp{$cpu} = $timestamp_usec;
+				$cpu_prev_exit_function{$cpu} = "kernel";
+				$cpu_prev_exit_line_number{$cpu} = $line_number{$cpu};
+				$in_guest{$cpu} = 0;
+				$line = $line . " guest->host"
+			}
+		}
+		else { # CPU is running DPDK application, so tracking user<->kernel changes
+			if ( $spacing eq "" ) {
+				if ( $function =~ /^\}/ ) {
+					# This marks when there was a transition from kernel to user.
+					# We can now log the elapsed time in the kernel as long as we 
+					# have the first kernel function from user->kernel transition
+					if ( $cpu_prev_exit_function{$cpu} ) {
+						if (not defined $report_by_cpu{$cpu}) {
+							$report_by_cpu{$cpu} = ();
+						}
+						$elapsed =~ s/\D+//;
+						$elapsed =~ s/\D+$//;
+						my %record = (  "usec_in_preempt" => $elapsed,
+								"exit_function" => $cpu_prev_exit_function{$cpu},
+								"line_number_start" => $cpu_prev_exit_line_number{$cpu},
+								"line_number_end" => $cpu_prev_line_number{$cpu},
+								"sec_start" => $cpu_prev_exit_timestamp{$cpu},
+								"sec_end" => $cpu_prev_timestamp{$cpu} );
+						# Use this array later to created sorted output
+						push(@{ $report_by_cpu{$cpu} }, \%record );
+	
+					} else {
+						printf "Error: the kernel->user transision does not have a initial kernel function logged\n";
+					}
+				} else {
+					# This marks when there was a transition from user to kernel.
+					# Log the first kernel function
+					$cpu_prev_exit_timestamp{$cpu} = $timestamp_usec;
+					$cpu_prev_exit_function{$cpu} = $function;
+					$cpu_prev_exit_line_number{$cpu} = $line_number{$cpu};
+				}
+			}
+		}
+		$cpu_prev_timestamp{$cpu} = $timestamp_usec;
+		$cpu_prev_line_number{$cpu} = $line_number{$cpu};
+		$line_number{$cpu}++;
+		if ($line_number{$cpu} % 10000 == 0) {
+			print "processing cpu: $cpu line_number: $line_number{$cpu}\n";
+		}
+		printf {$per_cpu_filehandles{$cpu}} "%s\n", $line;
+	}
+}
+print "Finished generating per-cpu ftrace reports\n";
+
+close FTRACE_REPORT;
+for my $cpu (keys %per_cpu_filehandles) {
+	close $per_cpu_filehandles{$cpu};
+}
+
+sub get_time {
+	my $val = pop;
+	return $$val{'usec_in_preempt'};
+}
+
+# generate a report per-cpu that is sorted, longest preemption to shorted premption
+# Each line represents a record of when the CPU transitioned from user to kernel
+# and back to user.  The first value is the time in usec spent in the kernel.
+# The second value is the kernel function called when entering the kernel.  The third
+# value is the line numbers in the ftrace-report.txt that represents the trace for
+# this preemption.
+my $preempts;
+for my $cpu (keys %per_cpu_filehandles) {
+	my @sorted_preempts = sort {get_time($b) <=> get_time($a)} @{ $report_by_cpu{$cpu} };
+	open($preempts, '>', "$dir/cpu-$cpu/preemptions.txt") || die "Could not open $dir/cpu-$cpu/preemptions.txt";
+	printf $preempts "%s, %s, %s-%s\n", "usec_in_preempt", "kernel_entry_function", "start", "end";
+	for my $entry (@sorted_preempts) {
+		my %record = %{$entry};
+		printf $preempts "[%.2f] [%s] [%d-%d]\n", $record{'usec_in_preempt'}, $record{'exit_function'}, $record{'line_number_start'}, $record{'line_number_end'};
+	}
+	close $preempts;
+}
+
+if (defined $max_buffer_size and defined $packet_processing_rate and defined $packet_incoming_rate) {
+	if ($packet_incoming_rate >= $packet_processing_rate ) {
+		print "Error: the packet_processing_rate [$packet_processing_rate] must be greater than the packet_incoming_rate [$packet_incoming_rate]\n";
+		exit 1;
+	} else {
+		my $buffer;
+		for my $cpu (keys %per_cpu_filehandles) {
+			my $current_buffer_size = 0;
+			print "Generating ./cpu-$cpu/buffer-sim.txt\n";
+			open($buffer, '>', "$dir/cpu-$cpu/buffer-sim.txt") || die "Could not open $dir/cpu-$cpu/buffer-sim.txt";
+			print $buffer "current_buffer_size: $current_buffer_size\n";
+			my %record;
+			my $exit_function_time;
+			my $enter_function_time;
+			my $prev_sec_end;
+			my $usec_in_user = 0;
+			my $overflow;
+			my $overflow_msg;
+			printf $buffer "usec_in_user/kernel, buffer_change, buffer_size kernel_function\n";
+			foreach my $record_ref ( @{$report_by_cpu{$cpu}} ) {
+				# calculate the time in user and decrease the buffer size
+				if (defined $prev_sec_end) {
+					$usec_in_user = ($$record_ref{'sec_start'} - $prev_sec_end);
+					my $buffer_reduction = ($packet_processing_rate - $packet_incoming_rate) * $usec_in_user;
+					if ($buffer_reduction > $current_buffer_size) {
+						$buffer_reduction = $current_buffer_size;
+					}
+					$current_buffer_size -= $buffer_reduction;
+					if ($current_buffer_size < 0) {
+						$current_buffer_size = 0;
+					}
+					printf $buffer "%12.2f|U, %8.2f, %05.2f\n", $usec_in_user, -$buffer_reduction, $current_buffer_size;
+				} 
+				# calculate the time in kernel and increase the buffer size
+				$prev_sec_end = $$record_ref{'sec_end'};
+				my $buffer_size_start = $current_buffer_size;
+				my $buffer_increase = $packet_incoming_rate * $$record_ref{'usec_in_preempt'};
+				$current_buffer_size += $buffer_increase;
+				$current_buffer_size += 1;
+				if ($current_buffer_size > $max_buffer_size) {
+					$overflow = $current_buffer_size - $max_buffer_size;
+					$current_buffer_size = $max_buffer_size;
+					$overflow_msg = sprintf "      OVERFLOW: $overflow";
+				} else {
+					$overflow_msg = sprintf "";
+				}
+				my $buffer_size_end = $current_buffer_size;
+				printf $buffer "%12.2f|P, %8.2f, %05.2f, %s:@%d-%d %s\n", $$record_ref{'usec_in_preempt'}, $buffer_increase, $current_buffer_size, $$record_ref{'exit_function'}, $$record_ref{'line_number_start'}, $$record_ref{'line_number_end'}, $overflow_msg;
+				$overflow_msg = "";
+			}
+			close $buffer;
+		}
+	}
+}

@@ -22,6 +22,7 @@ mode=""
 interval="10"
 iteration="1"
 options="none"
+cpus="-1" # used for trace-cmd
 case "$script_name" in
 	"sysfs")
 	pattern='*'
@@ -38,7 +39,7 @@ case "$script_name" in
 esac
 
 # Process options and arguments
-opts=$(getopt -q -o idp --longoptions "username:,password:,interface:,packets:,start-delay:,timeout:,devices:,path:,maxdepth:,pattern:,vm:,dir:,group:,iteration:,interval:,start,stop,install,postprocess" -n "getopt.sh" -- "$@");
+opts=$(getopt -q -o idp --longoptions "cpus:,username:,password:,interface:,packets:,start-delay:,timeout:,devices:,path:,maxdepth:,pattern:,vm:,dir:,group:,iteration:,interval:,start,stop,install,postprocess" -n "getopt.sh" -- "$@");
 if [ $? -ne 0 ]; then
 	printf "\n"
 	printf "$script_name: you specified an invalid option\n\n"
@@ -186,6 +187,13 @@ while true; do
 			shift
 		fi
 		;;
+		--cpus)
+		shift;
+		if [ -n "$1" ]; then
+			cpus="$1"
+			shift
+		fi
+		;;
 		--)
 		shift;
 		break;
@@ -218,6 +226,21 @@ case "$tool" in
 	blktrace)
 	tool_cmd="blktrace $devices >$tool_stdout_file"
 	;;
+	ftrace)
+	tool_bin=/usr/bin/trace-cmd
+	group=default
+	if [ "$cpus" != "-1" ]; then
+		math=""
+		for i in `echo $cpus | sed -e 's/,/ /g'`; do
+			math="$math +2^$i"
+		done
+		math=`echo $math | sed -e 's/^\+//'`
+		cpumask=`echo "obase=16; $math" | bc`
+		tool_cmd="$tool_bin record  -C x86-tsc -p function_graph -M $cpumask --max-graph-depth=5"
+	else
+		tool_cmd="$tool_bin record  -C x86-tsc -p function_graph --max-graph-depth=2"
+	fi
+	;;
 	kvmtrace)
 	tool_bin=/usr/bin/trace-cmd
 	group=default
@@ -238,9 +261,6 @@ case "$tool" in
 	rabbit)
 	tool_cmd="$script_path/datalog/$tool-datalog $interval $username $password $tool_stdout_file"
 	;;
-	disk)
-	tool_cmd="$script_path/datalog/$tool-datalog $interval $tool_stdout_file"
-	;;
 esac
 
 function safe_kill() {
@@ -258,45 +278,42 @@ function safe_kill() {
 		# should not happen
 		return 1
 	fi
-
+	
 	# check that the pid corresponds to the tool
 	pidlist=$(pidof -x $tool)
+	typeset -i len=0
 	for p in $pidlist ;do
+		len=$len+1
 		if [[ $p == $pid ]] ;then
 			pid_to_kill=$pid
 		fi
 	done
-
+	# hack: individual tools will have a different number of pids running.
+	# we might just delete the warning if it gets too cumbersome.
+	if [[ $len > 4 || ($len > 3 && $tool != "turbostat") ]] ;then
+		warn_log "Too many pids for $tool: $pidlist -- maybe old tools running? Use pbench-kill-tools."
+	fi
+	
 	rc=0
 	if [ ! -z "$pid_to_kill" ] ;then
 		kill -s $signal $pid_to_kill 2>/dev/null
 		rc=$?
 	fi
+	
 	[[ $rc == 0 ]] && return 0
 
 	# check if the process is still running.
-	pid_to_kill=""
-	typeset -i len=0
 	pidlist=$(pidof -x $tool)
 	for p in $pidlist ;do
-		len=$len+1
 		if [[ $p == $pid ]] ;then
 			# why is the pid still there?
-			pid_to_kill=$pid
+			kill -s KILL $pid 2>/dev/null
+			return 2
 		# else
 			# why are there other tool processes running?
 			# should we kill them?
 		fi
 	done
-
-	if [ ! -z "$pid_to_kill" ] ;then
-		kill -s KILL $pid_to_kill 2>/dev/null
-		return 2
-	fi
-
-	if [[ $len > 4 || ($len > 3 && $tool != "turbostat") ]] ;then
-		warn_log "Too many pids for $tool: $pidlist -- maybe old tools running? Use pbench-kill-tools."
-	fi
 	return 0
 }
 
@@ -347,13 +364,6 @@ case "$mode" in
 			exit 1
 		fi
 		;;
-		disk)
-		tool_bin="/usr/bin/df"
-		if [ ! -e $tool_bin ]; then
-			error_log "$tool_bin not installed, exiting"
-			exit 1
-		fi
-		;;
 	esac
 	;;
 	start)
@@ -374,34 +384,47 @@ case "$mode" in
 	;;
 	stop)
 	debug_log "stopping $script_name"
-	if [[ -s "$tool_pid_file" ]]; then
-		pid=`cat $tool_pid_file`
-		if [ ! -z "$pid" ] ;then
-			if [ "$tool" == "kvmtrace" ]; then
-				if [ -z "$sleep_cmd" ]; then
-					# kill the perf cmd
-					safe_kill $tool $pid INT
-				else
-					# kill the sleep process if it still exists
-					sleep_pid=`ps --ppid $pid | pgrep sleep`
-					if [ ! -z "$sleep_pid" ]; then
-						safe_kill $tool $sleep_pid
-					fi
-				fi
-				# wait for the trace-cmd pid to complete
-				while [ -d /proc/$pid ]; do
-					debug_log "waiting for PID $pid to die"
-					sleep 0.5
-				done
-				rc=0
-			else
-				safe_kill $tool $pid
-				rc=$?
-				/bin/rm -f "$tool_pid_file"
-			fi
+	pid=`cat $tool_pid_file`
+	if [ ! -z "$pid" ] ;then
+		if [ "$tool" == "ftrace" ]; then
+			# change the PID to the child process, which is the actual trace-cmd PID
+			echo "old PID: $pid"
+			pid=`pgrep -P $pid`
+			echo "new PID: $pid"
+			kill -INT $pid
+			sleep 5
+			# wait for the trace-cmd pid to complete
+			while [ -d /proc/$pid ]; do
+				echo "waiting for PID $pid to die"
+				debug_log "waiting for PID $pid to die"
+				kill -INT $pid
+				sleep 5
+			done
 		fi
-	else
-		warn_log "[$script_name]: tool is not running, nothing to kill"
+		if [ "$tool" == "kvmtrace" ]; then
+			if [ -z "$sleep_cmd" ]; then
+				# kill the perf cmd
+				echo "safe killing $pid"
+				safe_kill $tool $pid INT
+			else
+				# kill the sleep process if it still exists
+				sleep_pid=`ps --ppid $pid | pgrep sleep`
+				if [ ! -z "$sleep_pid" ]; then
+					safe_kill $tool $sleep_pid
+				fi
+			fi
+			# wait for the trace-cmd pid to complete
+			while [ -d /proc/$pid ]; do
+				echo "waiting for PID $pid to die"
+				debug_log "waiting for PID $pid to die"
+				sleep 0.5
+			done
+			rc=0
+		else
+			safe_kill $tool $pid
+			rc=$?
+			/bin/rm -f "$tool_pid_file"
+		fi
 	fi
 	;;
 	postprocess)
@@ -420,6 +443,11 @@ case "$mode" in
 		done
 		wait
 		popd >/dev/null
+		;;
+		ftrace)
+		/usr/bin/trace-cmd report >ftrace-report-stdout.txt 2>ftrace-report-stderr.txt
+		$script_path/postprocess/$script_name-postprocess "$tool_output_dir"
+		xz ftrace-report-stdout.txt
 		;;
 		kvmtrace)
 		/usr/bin/trace-cmd report >kvmtrace-report-stdout.txt 2>kvmtrace-report-stderr.txt

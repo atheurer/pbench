@@ -1,0 +1,48 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use File::Basename;
+use File::Find;
+my $pbench_run_path;
+my $pbench_lib_path;
+BEGIN {
+	$pbench_lib_path = `getconf.py pbench_install_dir pbench-agent`;
+	chomp $pbench_lib_path;
+	$pbench_lib_path .= "/lib";
+}
+use lib "$pbench_lib_path";
+use JSON;
+use Data::Dumper;
+use PbenchCDM qw(create_metric_sample_doc create_bench_iter_sample_period_doc);
+use PbenchBase qw(get_json_file put_json_file remove_element);
+
+printf "\@ARGV: %s\n", join(" ", @ARGV);
+
+my $script_name = basename($0);
+my $cdm_version = shift(@ARGV);
+my $run_id = shift(@ARGV);
+my $es_host = shift(@ARGV);
+
+my @indices = ( 'iteration', 'period', 'sample', 'metric', 'config_cpu_vulnerabilities', 'config_yum_repos', 'run' );
+
+sub delete_run_from_index {
+    my $index = shift;
+    my $cdm_version = shift;
+    my $es_host = shift;
+    my $run_id = shift;
+
+    printf "\n##### INDEX: %s #####\n", $index;
+
+    my $cmd = sprintf "curl -X POST \"%s/cdm%d-%s/_delete_by_query\" -H 'Content-Type: application/json'", $es_host, $cdm_version, $index;
+    $cmd .= sprintf " -d '{ \"query\": { \"bool\": { \"filter\": [ { \"term\": { \"run.id\": \"%s\" } } ] } } }'", $run_id;
+
+    system($cmd);
+    #printf "%s", $cmd;
+
+    print "\n";
+}
+
+foreach my $index ( @indices ) {
+    delete_run_from_index($index, $cdm_version, $es_host, $run_id);
+}

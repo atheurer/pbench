@@ -1,0 +1,299 @@
+#!/usr/bin/perl
+## -*- mode: perl; indent-tabs-mode: t; perl-indent-level: 4 -*-
+## vim: autoindent tabstop=4 shiftwidth=4 expandtab softtabstop=4 filetype=perl
+
+use strict;
+use warnings;
+use File::Basename;
+use File::Find;
+use REST::Client;
+my $pbench_run_path;
+my $pbench_lib_path;
+BEGIN {
+	$pbench_lib_path = `getconf.py pbench_install_dir pbench-agent`;
+	chomp $pbench_lib_path;
+	$pbench_lib_path .= "/lib";
+}
+use lib "$pbench_lib_path";
+use JSON;
+use Data::Dumper;
+use PbenchCDM qw(create_metric_sample_doc create_bench_iter_sample_period_doc get_cdm_ver get_cdm_rel);
+use PbenchBase qw(get_json_file put_json_file remove_element);
+
+sub gen_metric_groups {
+    my $pointer = shift;
+    my $query = shift;
+    my @fields = @_;
+    my @metr_grp_queries;
+    # If being called from a previous gen_metric_groups, finish the second part of the terms query
+    if (exists $$pointer{"key"}) {
+        $query .= '"' . $$pointer{"key"} . '"}}';
+    }
+    if (scalar @fields > 0) {
+        my $field = shift @fields;
+        if (exists $$pointer{$field} and exists $$pointer{$field}{"buckets"}) {
+            foreach my $bucket (@{ $$pointer{$field}{"buckets"} }) {
+                # Only the first half of the "term", the field name, is here because we need to go one level deeper to get
+                # the value, in each of the buckets (one levep deeper).
+                push @metr_grp_queries, gen_metric_groups($bucket, $query . "," . '{"term": {"metric.' . $field . '": ', @fields);
+            }
+        }
+        return @metr_grp_queries;
+    } else {
+        $query =~ s/^,//;
+        return $query;
+    }
+}
+
+my $script_name = basename($0);
+my $es_host = shift(@ARGV);
+my %req_header = ("Content-Type" => "application/json");
+my $template = 
+'{
+  "size": 100,
+  "query" : {
+      "bool": {
+        "filter": [
+        ]
+      }
+    }
+}';
+my $client = REST::Client->new();
+$client->setHost($es_host);
+
+my $run_id = "3d1cee00-bef7-4ca6-836d-0a41e8f28180";
+my $bench_name;
+# with run.id get the run doc(s)
+my $run_req_ref = from_json($template);
+push @{ $$run_req_ref{"query"}{"bool"}{"filter"} },
+     from_json('{"term": {"run.id": "' . $run_id . '"}}');
+$$run_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "run.bench.name";
+my $run_req_json = to_json($run_req_ref);
+$client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-iteration/iteration/_search",
+                 $run_req_json, \%req_header);
+my $resp = $client->responseContent();
+my $run_resp_ref = from_json($resp);
+if (scalar @{ $$run_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
+    $bench_name = $$run_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
+    print "benchmark: $bench_name\n";
+} else {
+    print "Could not find just one benchmark for this run\n";
+    exit 1;
+}
+# with run.id get the iterations
+my $iter_req_ref = from_json($template);
+push @{ $$iter_req_ref{"query"}{"bool"}{"filter"} },
+     from_json('{"term": {"run.id": "' . $run_id . '"}}');
+my $iter_req_json = to_json($iter_req_ref);
+$client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-iteration/iteration/_search",
+                 $iter_req_json, \%req_header);
+my $response = $client->responseContent();
+$run_resp_ref = from_json($response);
+foreach my $iter ( @{ $$run_resp_ref{'hits'}{'hits'} } ) {
+    printf "\niteration.id: %s\n", $$iter{'_source'}{'iteration'}{'id'};
+    printf "iteration.params: %s\n", $$iter{'_source'}{'iteration'}{'params'};
+    # get to get all sample docs for an iteration
+    my $samp_req_ref = from_json($iter_req_json);
+    push @{ $$samp_req_ref{"query"}{"bool"}{"filter"} },
+         from_json('{"term": {"iteration.id": "' . $$iter{'_source'}{'iteration'}{'id'} . '"}}');
+    $$samp_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "iteration.primary_metric";
+    my $samp_req_json = to_json($samp_req_ref);
+    $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-sample/sample/_search",
+                     $samp_req_json, \%req_header);
+    my $response = $client->responseContent();
+    my $samp_resp_ref = from_json($response);
+    my $primary_metric;
+    if (scalar @{ $$samp_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
+        $primary_metric = $$samp_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
+        print "primary_metric: $primary_metric\n";
+    } else {
+        print "Could not find just one primary for this iteration\n";
+        exit 1;
+    }
+    my $sample_num = 0;
+    my $samples = "";
+    my $sum = 0;
+    foreach my $samp ( @{ $$samp_resp_ref{'hits'}{'hits'} } ) {
+        #printf "  sample.id: %s\n", $$samp{'_source'}{'sample'}{'id'};
+        #printf "iteration.primary_metric: %s\n", $$samp{'_source'}{'iteration'}{'primary_metric'};
+        #printf "  iteration.primary_period: %s\n", $$samp{'_source'}{'iteration'}{'primary_period'};
+        # get the primary period name
+        my $peri_req_ref = from_json($samp_req_json);
+        push @{ $$peri_req_ref{"query"}{"bool"}{"filter"} },
+             from_json('{"term": {"period.name": "' . $$samp{'_source'}{'iteration'}{'primary_period'} . '"}}');
+        push @{ $$peri_req_ref{"query"}{"bool"}{"filter"} },
+             from_json('{"term": {"sample.id": "' . $$samp{'_source'}{'sample'}{'id'} . '"}}');
+        my $peri_req_json = to_json($peri_req_ref);
+        $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-period/period/_search",
+                         $peri_req_json, \%req_header);
+        my $resp = $client->responseContent();
+        my $peri_ref = from_json($resp);
+        if (exists $$peri_ref{'hits'}{'hits'}[0]) {
+            my %peri = %{ $$peri_ref{'hits'}{'hits'}[0] };
+            my $period_id = $peri{'_source'}{'period'}{'id'};
+            #printf "    period.id: %s\n", $period_id;
+            # verify all metrics have same name_format
+            my $metr_req_ref = from_json($peri_req_json);
+            push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
+                from_json('{"term": {"period.id": "' . $period_id . '"}}');
+            push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
+                from_json('{"term": {"metric.source": "' . $bench_name . '"}}');
+            push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
+                from_json('{"term": {"metric.type": "' . $primary_metric . '"}}');
+            $$metr_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "metric.name_format";
+            my $metr_req_json = to_json($metr_req_ref);
+            $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-metric/metric/_search",
+                             $metr_req_json, \%req_header);
+            my $metr_resp = $client->responseContent();
+            my $metr_resp_ref = from_json($metr_resp);
+            if (scalar @{ $$metr_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
+                my $name_format = $$metr_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
+                #print "    metric.name_format: $name_format\n";
+                # build the nested aggregation based on the field names found in the name_format
+                my $name_format_copy = $name_format;
+                my $aggs_json = '{';
+                # first find the field names
+                my @field_names;
+                my $field_count = 0;
+                while ( $name_format_copy =~ /\%\S+\%/ ) {
+                    $name_format_copy =~ s/([^\%]*)\%(\w+)\%(\.*)/$3/;
+                    #print "leading text: [$1]\n";
+                    #print "field_name: [$2]\n";
+                    push @field_names, $2;
+                    $field_count++;
+                    if ($field_count > 1) {
+                        $aggs_json .= ',';
+                    }
+                    # build the nested aggregation: note the fewer number of }'s
+                    $aggs_json .= '"aggs": { "' . $2 . '": { "terms": { "field": "metric.' . $2 . '" }';
+                }
+                while ($field_count > 0) {
+                    $aggs_json .= "}}";
+                    $field_count--;
+                }
+                $aggs_json .= '}';
+                #printf "aggs_json: %s\n\n", $aggs_json;
+                my $aggs_ref = from_json($aggs_json);
+                # now replace the old aggregation with the new one on the request
+                $$metr_req_ref{"aggs"} = $$aggs_ref{"aggs"};
+                #printf "nested aggs req: %s\n", to_json($metr_req_ref);
+                $metr_req_json = to_json($metr_req_ref);
+                $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-metric/metric/_search",
+                                $metr_req_json, \%req_header);
+                my $metr_resp = $client->responseContent();
+                my $metr_resp_ref = from_json($metr_resp);
+                # by traversing the aggrgeations in the response, find all of the different metric groupings
+                # (each group represents a single timeseries)
+                my @metr_grp_terms = gen_metric_groups($$metr_resp_ref{"aggregations"}, "", @field_names);
+                # find the time domain where every single metric gorup was present
+                my $latest_begin;
+                my $earliest_end;
+                foreach my $terms (@metr_grp_terms) {
+                    # the next request will start with our base reqeust from the metric request,
+                    # where run/iteration/sample/period/metric.source/metric.type
+                    my $metr_grp_req_ref = from_json($metr_req_json);
+                    # use the term for a specific metric group (specific timeseries)
+                    my $metr_grp_terms_ref = from_json('[' . $terms . ']');
+                    # add to, not replace, the existing terms in the filter
+                    my @filter = (@{ $$metr_grp_req_ref{"query"}{"bool"}{"filter"} }, @{ $metr_grp_terms_ref});
+                    $$metr_grp_req_ref{"query"}{"bool"}{"filter"} = \@filter;
+                    # delete any old agg and add one for earliest date
+                    delete $$metr_grp_req_ref{"aggs"};
+                    # add 2 new aggregations, one for getting the earliest 'begin' and one for the latest 'end'
+                    $$metr_grp_req_ref{"aggs"}{"earliest_begin"}{"min"}{"field"} = "metric.begin";
+                    $$metr_grp_req_ref{"aggs"}{"latest_end"}{"max"}{"field"} = "metric.end";
+                    my $metr_grp_req_json = to_json($metr_grp_req_ref);
+                    $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-metric/metric/_search",
+                                    $metr_grp_req_json, \%req_header);
+                    my $metr_grp_resp = $client->responseContent();
+                    my $metr_grp_resp_ref = from_json($metr_grp_resp);
+                    my $earliest_begin = $$metr_grp_resp_ref{"aggregations"}{"earliest_begin"}{"value"};
+                    if (not defined $latest_begin or $earliest_begin > $latest_begin) {
+                        $latest_begin = $earliest_begin;
+                    }
+                    my $latest_end = $$metr_grp_resp_ref{"aggregations"}{"latest_end"}{"value"};
+                    if (not defined $earliest_end or $latest_end < $earliest_end) {
+                        $earliest_end = $latest_end;
+                    }
+                }
+                #print "latest_begin: $latest_begin\n";
+                #print "earliest_end: $earliest_end\n";
+                my $elapsed = ($earliest_end - $latest_begin) / 1000;
+                # the elapsed time should be slightly shorter than whatever the runtime was
+                # for this benchmark
+                #print "elapsed: $elapsed\n";
+                # Form an aggregation in which all documents returned have at their time domain
+                # (from metric.begin to metric.end) some overlap within the $latest_begin 
+                # and $earliest_end.  This means some documents might have a begin before 
+                # $latest_begin, but that document should have its metric.end after the $latest_begin.
+                # Same is true if the metric.end is later than the $earliest_end, but the document's
+                # metric.begin must be before $earliest_end
+                my $metr_avg_req_ref = from_json($metr_req_json);
+                push @{ $$metr_avg_req_ref{"query"}{"bool"}{"filter"} },
+                     from_json('{"range": {"metric.end": { "gte": "' . $latest_begin . '"}}}');
+                push @{ $$metr_avg_req_ref{"query"}{"bool"}{"filter"} },
+                     from_json('{"range": {"metric.begin": { "lte": "' . $earliest_end . '"}}}');
+                delete $$metr_avg_req_ref{"aggs"};
+                # The following is used to generate a aggregate timeseries, but we don't need that
+                # to report a single value for the result
+                #$$metr_begins_req_ref{"aggs"}{"begin"}{"terms"}{"field"} = "metric.begin";
+                #$$metr_begins_req_ref{"aggs"}{"end"}{"terms"}{"field"} = "metric.end";
+                # "size" limits the number of buckets returned, and since we have millisecond granularity,
+                # the most buckets we should need is $earliest_end - $latest_begin
+                #$$metr_begins_req_ref{"aggs"}{"begin"}{"terms"}{"size"} = $earliest_end - $latest_begin;
+                #$$metr_begins_req_ref{"aggs"}{"end"}{"terms"}{"size"} = $earliest_end - $latest_begin;
+
+                # A weighted average is used to produce a value per metric group
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"value"}{"field"} = "metric.value";
+                # This script needs work because it is possible that the metric.begin to metric.end 
+                # includes time outside $latest_begin to $earliest_end.  A more advanced script is necessary
+                # to fix this
+                #$$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"} = "doc[metric].end - doc[metric].begin + 1";
+                #$$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"} = "doc['metric.end'].value - doc['metric.begin'].value + 1";
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"lang"} = "painless";
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"params"}{"earliest_end"} = int $earliest_end;
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"params"}{"latest_begin"} = int $latest_begin;
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"source"}  = 
+                                   "long begin = doc['metric.begin'].value.millis < params.latest_begin ? params.latest_begin : doc['metric.begin'].value.millis;\n";
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"source"} .= 
+                                   "long end = doc['metric.end'].value.millis < params.earliest_end ? params.earliest_end : doc['metric.end'].value.millis;\n";
+                $$metr_avg_req_ref{"aggs"}{"metric_avg"}{"weighted_avg"}{"weight"}{"script"}{"source"} .= 
+                                   "return end - begin + 1;";
+                # This is out base request, which we will add to below to get results for a specific metric group
+                my $metr_avg_req_json = to_json($metr_avg_req_ref);
+                # Now we can get the weighted average per metric group.
+                my $all_grp_value = 0;
+                foreach my $terms (@metr_grp_terms) {
+                    my $metr_grp_avg_req_ref = from_json($metr_avg_req_json);
+                    # use the term for a specific metric group (specific timeseries)
+                    my $metr_grp_terms_ref = from_json('[' . $terms . ']');
+                    # add to, not replace, the existing terms in the filter
+                    my @filter = (@{ $$metr_grp_avg_req_ref{"query"}{"bool"}{"filter"} }, @{ $metr_grp_terms_ref});
+                    $$metr_grp_avg_req_ref{"query"}{"bool"}{"filter"} = \@filter;
+                    #print Dumper $metr_grp_avg_req_ref;
+                    my $metr_grp_avg_req_json = to_json($metr_grp_avg_req_ref);
+                    $client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-metric/metric/_search",
+                                     $metr_grp_avg_req_json, \%req_header);
+                    my $metr_grp_avg_resp = $client->responseContent();
+                    my $metr_grp_avg_resp_ref = from_json($metr_grp_avg_resp);
+                    #print Dumper $metr_grp_avg_resp_ref;
+                    #print Dumper $$metr_grp_avg_resp_ref{"aggregations"};
+                    # assuming this is a throughput metric class, and so we sum all metric groups
+                    $all_grp_value += $$metr_grp_avg_resp_ref{"aggregations"}{"metric_avg"}{"value"};
+                }
+                $samples .= sprintf ", %.4f", $all_grp_value;
+                $sample_num++;
+                $sum += $all_grp_value;
+            } else {
+                print "Could not find just one metric name_format for this iteration\n";
+                exit 1;
+            }
+        } else { # data is missing
+            print Dumper $peri_ref;
+        }
+    }
+    $samples =~ s/^,\s//;
+    printf "samples: [%s]\n", $samples;
+    printf "mean: [%.4f]\n", ($sum / $sample_num);
+}
+

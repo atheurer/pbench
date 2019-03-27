@@ -15,6 +15,7 @@
 use strict;
 use warnings;
 use File::Basename;
+use File::Path qw(remove_tree);
 my $pbench_lib_path;
 my $pbench_install_path;
 BEGIN {
@@ -30,14 +31,16 @@ use PbenchCDM        qw(create_run_doc create_config_osrelease_doc create_config
                         get_uuid create_bench_iter_doc create_config_doc);
 use PbenchBase       qw(get_json_file put_json_file get_benchmark_names get_pbench_run_dir
                         get_pbench_install_dir get_pbench_config_dir get_pbench_bench_config_dir
-                        get_benchmark_results_dir get_params remove_params get_hostname
-                        metadata_log_begin_run metadata_log_end_run metadata_log_record_iteration);
+                        get_benchmark_results_dir get_params remove_params get_hostname);
 use PbenchAnsible    qw(ssh_hosts ping_hosts copy_files_to_hosts copy_files_from_hosts
                         remove_files_from_hosts remove_dir_from_hosts create_dir_hosts
                         sync_dir_from_hosts verify_success stockpile_hosts);
 
-my %defaults = ( "num-samples" => 1,
-                 "tool-group" => "default" );
+my %defaults = ( "num_samples" => 1,
+                 "tool_group" => "default" );
+
+my $pp_only = 0;
+my $base_bench_dir = "";
 
 # The only required [positional] argument is the benchmark name; verify it now
 if (scalar @ARGV == 0) {
@@ -56,8 +59,33 @@ if ($benchmark eq "list") {
 # The rest of the parameters are --arg=val, most of which we just pass to other scripts,
 my %params = get_params(@ARGV);
 
+# Prepare for a post-process only mode if detected
+if (exists $params{"postprocess-only"} and $params{"postprocess-only"} eq "y") {
+    $pp_only = 1;
+    printf "found postprocess-only\n";
+    delete $params{"postprocess-only"};
+    if (exists $params{"postprocess-dir"}) {
+        $base_bench_dir = $params{"postprocess-dir"};
+        delete $params{"postprocess-dir"};
+    } else {
+	# Assume already in the base benchmark directory
+        $base_bench_dir = `/bin/pwd`;
+        chomp $base_bench_dir;
+    }
+    printf "base_bench_dir: %s\n", $base_bench_dir;
+}
+
+# Document the params used for this invocation so one can re-run, and then they can add
+# "--postprocess-only=y --base-bench_dir=$base_bench_dir" if they wish to not run but
+# only postprocess.
+my $cmdfile = $base_bench_dir . "/pbench-run-benchmark.cmd";
+printf "cmdfile: %s\n", $cmdfile;
+open(my $cmd_fh, ">" . $cmdfile) ||
+    die "Could not create $cmdfile";
+printf $cmd_fh "pbench-run-benchmark %s ", $benchmark;
+
 # Every benchmark must have at least 1 client, even if the client is the same host as the controller
-if (! exists $params{'clients'}) {
+if (! $params{'clients'}) {
     print "You must specify at least 1 client with --clients\n";
     exit 1;
 }
@@ -66,31 +94,43 @@ if (! exists $params{'clients'}) {
 for my $param (qw(user-name user-email user-desc user-tags)) {
     my $env_var = uc $param;
     $env_var =~ s/-/_/g;
-    if (! exists $params{$param}) { # if --arg_name was used, $ARG_NAME will not be used
-        if (! exists $ENV{$env_var}) {
+    if (!$params{$param}) { # if --arg_name was used, $ARG_NAME will not be used
+        if (!$ENV{$env_var}) {
             printf "\n***** it is highly recommended you do one of the following:\n" .
                    "- export this variable before calling this script %s\n" .
                    "- use this parameter when calling this script: --%s\n\n", $env_var, $param;
             $params{$param} = "";
         } else {
             $params{$param} = $ENV{$env_var};
+            # Store these in case someone wants to postprocess this run
+            printf $cmd_fh "--%s=%s ", $params{$param}, $ENV{$env_var};
         }
     }
 }
 
 # Apply the Pbench defaults (not the benchmark defaults)
 for my $def (keys %defaults) {
-    if (! exists $params{$def}) {
+    if (!$params{$def}) {
         $params{$def} = $defaults{$def};
     }
 }
 
 # Prepare all the dirs for the run
-my $base_bench_dir = get_benchmark_results_dir($benchmark, $params{"user-tags"});
-# Spaces in directories, just don't do it
-$base_bench_dir =~ s/\s+/_/g;
-mkdir("$base_bench_dir");
+if ($pp_only) {
+    if (! -e $base_bench_dir) {
+	die "Expected the base benchmark directory, [$base_bench_dir], to already exist, since this is a post-process only mode";
+    }
+} else {
+    $base_bench_dir = get_benchmark_results_dir($benchmark, $params{"user-tags"});
+    # Spaces in directories, just don't do it
+    $base_bench_dir =~ s/\s+/_/g;
+    mkdir("$base_bench_dir");
+}
 my $es_dir = $base_bench_dir . "/es";
+if ($pp_only) {
+    # Do not re-use any existing CDM docs
+    remove_tree($es_dir);
+}
 mkdir($es_dir);
 for my $es_subdir (qw(run bench config metrics)) {
     mkdir($es_dir . "/" . $es_subdir);
@@ -108,8 +148,12 @@ my $iteration_id = 0;
 my $run_id = get_uuid;
 my %last_run_doc;
 print "Generating all benchmark iterations\n";
-# We don't want these params passed to gen-iterations because they are not bechmark-native options
-remove_params(\@ARGV, qw(user-desc user-tags user-name user-email)); 
+# We don't want these params passed to gen-iterations because they are not benchmark-native options
+remove_params(\@ARGV, qw(postprocess-only user-desc user-tags user-name user-email)); 
+if (! $pp_only) {
+    # Store the rest of the params for re-running or postprocessing
+    printf $cmd_fh " %s", join(" ", @ARGV);
+}
 # First call pbench-gen-iterations and only resolve any --defaults=, so that the run
 # doc has the full set of params
 my $get_defs_cmd = "pbench-gen-iterations " . $benchmark . " --defaults-only " . join(" ", @ARGV);
@@ -122,7 +166,6 @@ if ($? != 0) {
 }
 mkdir($base_bench_dir);
 open(my $fh, ">" . $base_bench_dir . "/iteration-list.txt");
-metadata_log_begin_run($base_bench_dir, $params{"tool-group"});
 # There can be multiple parts of a run if the user generated multiple parameter-sets
 # (used a "--" in their cmdline).  Each part of the run has it's own run document, 
 # but all of the run documents share the same run ID.
@@ -141,7 +184,7 @@ while (scalar @param_sets > 0) {
     if ($param_set =~ s/--samples=(\S+)\s*//) {
         $num_samples = $1;
     } else {
-        $num_samples = $defaults{'num-samples'};
+        $num_samples = $defaults{'num_samples'};
     }
     my $get_iters_cmd = "pbench-gen-iterations " . $benchmark . " " . $param_set;
     # Escape quotes again as this will get passed to pbench-gen-iterations again.
@@ -158,6 +201,12 @@ while (scalar @param_sets > 0) {
                     "pbench", ""); #todo: include tool names
     $run_doc{'run'}{'id'} = $run_id; # use the same run ID for all run docs
     # Now run the iterations for this parameter-set
+    if ($pp_only) {
+        # Prepare a bash script to process all iterations & samples at once
+        # This provides for a *much* fatser post-processing on server-side
+        open(BULK_FH, ">bulk-sample.sh");
+        print BULK_FH "#!/bin/bash\n";
+    }
     for my $iteration_params (@iterations) {
         chomp $iteration_params;
         if ($iteration_params =~ /^#/) {
@@ -166,43 +215,66 @@ while (scalar @param_sets > 0) {
         }
         my %iter_doc = create_bench_iter_doc(\%run_doc, $iteration_params,); 
         put_json_file(\%iter_doc, $es_dir . "/bench/iteration-" . $iter_doc{'iteration'}{'id'} . ".json");
-        metadata_log_record_iteration($base_bench_dir, $iteration_id, $iteration_params);
         printf $fh "%d %s\n", $iteration_id, $iteration_params;
         printf "\n\n\niteration_ID: %d\niteration_params: %s\n", $iteration_id, $iteration_params;
-        for (my $sample_id=0; $sample_id<$num_samples; $sample_id++) {
-            printf "sample_ID: %d\n", $sample_id;
-            my $iteration_dir = $base_bench_dir . "/iteration" . $iteration_id;
+        my $iteration_dir = $base_bench_dir . "/iteration" . $iteration_id;
+        my @sample_dirs;
+        if ($pp_only) {
+            opendir(my $iter_dh, $iteration_dir) || die "Can't opendir $iteration_dir: $!";
+            @sample_dirs = grep { /^sample\d+/ } readdir($iter_dh);
+        } else {
             mkdir($iteration_dir);
-            my $iteration_sample_dir = $iteration_dir . "/sample" . $sample_id;
-            mkdir($iteration_sample_dir);
+            for (my $sample_id=0; $sample_id<$num_samples; $sample_id++) {
+                $sample_dirs[$sample_id] = "sample" . $sample_id;
+            }
+        }
+        #for (my $sample_id=0; $sample_id<$num_samples; $sample_id++) {
+        #for my $sample_dir (@sample_dirs) {
+        while (scalar @sample_dirs > 0) {
+            my $sample_dir = shift(@sample_dirs);
+            print "$sample_dir\n";
+            #mkdir($iteration_dir);
+            #my $iteration_sample_dir = $iteration_dir . "/sample" . $sample_id;
+            my $iteration_sample_dir = $iteration_dir . "/" . $sample_dir;
+            if (! $pp_only) {
+                mkdir($iteration_sample_dir);
+            }
             my $last_sample = "0";
-            if ($sample_id == ($params{"num-samples"} - 1)) {
+            #if ($sample_id == ($params{"num_samples"} - 1)) {
+            if (scalar @sample_dirs == 0) {
                 $last_sample = "1";
             }
             my $benchmark_cmd = "pbench-run-benchmark-sample " . $es_dir . "/bench/iteration-" .
                                 $iter_doc{'iteration'}{'id'} . ".json " . $iteration_sample_dir .
-                                " " . $base_bench_dir . " " . $params{"tool-group"} . " " . $last_sample;
-            my $benchmark_sample_output = `$benchmark_cmd`;
-            my $exit_code = $?;
-            print "output:\n$benchmark_sample_output";
-            if ($exit_code != 0) {
-                printf "Stopping because of iteration-sample exit code: %d\n", $exit_code;
-                exit 1;
+                                " " . $base_bench_dir . " " . $params{"tool_group"} .
+                                " " .  $last_sample . " " . $pp_only;
+            if ($pp_only) {
+                print BULK_FH "$benchmark_cmd  &\n";
+            } else {
+                my $benchmark_sample_output = `$benchmark_cmd`;
+                my $exit_code = $?;
+                print "output:\n$benchmark_sample_output";
+                if ($exit_code != 0) {
+                    printf "Stopping because of iteration-sample exit code: %d\n", $exit_code;
+                    exit 1;
+                }
             }
         }
         $iteration_id++;
+    }
+    if ($pp_only) {
+        print BULK_FH "wait\n";
+        close(BULK_FH);
+        system(". ./bulk-sample.sh");
     }
     $run_doc{'run'}{'end'} = time * 1000; # time in milliseconds
     put_json_file(\%run_doc, $es_dir . "/run/run" . $run_part . "-" . $run_doc{'run'}{'id'} . ".json");
     %last_run_doc = %run_doc; # We need to keep at least 1 run doc to create the config docs later
     $run_part++;
 }
-metadata_log_end_run($base_bench_dir, $iteration_id, $benchmark, $params{'user-tags'}, $params{'tool-group'});
 close $fh;
 # Generate the result.html (to go away once CDM/Elastic UI is available)
-system(". " . $pbench_install_path . "/base; " . $pbench_install_path .
-    "/bench-scripts/postprocess/generate-benchmark-summary " . $benchmark .
-    " " . $benchmark . " " . $base_bench_dir);
+system(". " . $pbench_install_path . "/base; " . $pbench_install_path . "/bench-scripts/postprocess/generate-benchmark-summary " . $benchmark . " " . $benchmark . " " . $base_bench_dir);
 
 # Convert the stockpile data with scribe, then create CDM docs in ./es/config
 if (-e $base_bench_dir . "/stockpile.json") {
@@ -211,7 +283,7 @@ if (-e $base_bench_dir . "/stockpile.json") {
     open(my $scribe_fh, "<" . $base_bench_dir . "/scribe.json") || die "Could not open " .
         $base_bench_dir . "/scribe.json";
     my $json_text = "";
-    # Instead of 1 json document, there are actually multiple documents, but no separator
+    # Instead of 1 json document, there are actually multiple documents, but no seperator
     # between them or organized in an array
     while (<$scribe_fh>) {
         $json_text .= $_;
@@ -219,7 +291,7 @@ if (-e $base_bench_dir . "/stockpile.json") {
             my %config_doc = create_config_doc(\%last_run_doc, from_json($json_text));
             if ($config_doc{'cdm'}{'doctype'} =~ /^config_(.+)/) {
                 my $config_subname = $1;
-                if (exists $config_doc{'config'}{'id'}) {
+                if ($config_doc{'config'}{'id'}) {
                     put_json_file(\%config_doc, $es_dir . "/config/" . $config_doc{'cdm'}{'doctype'} .
                                 "-" . $config_doc{'config'}{'id'} . ".json");
                 } else {
@@ -233,3 +305,4 @@ if (-e $base_bench_dir . "/stockpile.json") {
     }
     close($scribe_fh);
 }
+printf "Run complete\n\n";

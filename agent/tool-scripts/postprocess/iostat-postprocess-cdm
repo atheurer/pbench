@@ -37,6 +37,10 @@ my %period_doc = %$json_ref; # this is the CDM doc for the run
 my $timestamp_ms;
 my $last_timestamp_ms;
 open(IOSTAT_TXT, $tool_dir . "/iostat-stdout.txt") || die "could not find iostat-stdout.txt";
+# A single ndjson file is used to store all values for this iostat output file
+# Since there may be many iostat files (from different runs/iterations/samples/periods), the
+# filename must have the period ID.
+open(NDJSON_FH, ">" . $es_dir . "/metrics/" . $hostname .  "/metric-" . $period_doc{"period"}{"id"} . "-iostat" . ".ndjson");
 while (my $line = <IOSTAT_TXT>) {
 	chomp $line;
 	# Each sample should start with a time stamp (the -t in iostat).
@@ -84,13 +88,11 @@ while (my $line = <IOSTAT_TXT>) {
 					);
 				$metric_sample{"metric"}{"device"} = $dev;
 				$metric_sample{"metric"}{"begin"} = $last_timestamp_ms + 1;
-				put_json_file(\%metric_sample, $es_dir . "/metrics/" .
-						$hostname .
-						"/metric-" .
-						$metric_sample{'metric'}{'id'} .
-						".json");
+                printf NDJSON_FH "%s\n", '{ "index": {} }';
+                printf NDJSON_FH "%s\n", to_json(\%metric_sample);
 			}
 		}
 	}
 }
 close(IOSTAT_TXT);
+close(NDJSON_FH);

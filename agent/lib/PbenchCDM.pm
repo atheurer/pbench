@@ -20,13 +20,17 @@ our @EXPORT_OK = qw(create_run_doc create_config_osrelease_doc create_config_cpu
                     create_config_netdevs_doc create_config_ethtool_doc create_config_base_doc
                     get_uuid create_bench_iter_sample_doc create_metric_sample_doc
                     create_metric_sample_doc create_bench_iter_sample_period_doc
-                    create_bench_iter_doc create_config_doc get_cdm_ver);
+                    create_bench_iter_doc create_config_doc get_cdm_ver get_cdm_rel);
 
 my $script = "PbenchCDM.pm";
 my $sub;
 
 sub get_cdm_ver {
-    return 'v3dev';
+    return 3;
+}
+
+sub get_cdm_rel {
+    return "dev"; # can also be "prod"
 }
 
 sub get_uuid {
@@ -50,7 +54,7 @@ sub get_user_email { # Looks for USER_NAME in %ENV
 # Create the fields every doc must have
 sub populate_base_fields {
     my $doc_ref = shift;
-    $$doc_ref{'cdm'}{'ver'} = get_cdm_ver;
+    $$doc_ref{'cdm'}{'ver'} = int get_cdm_ver;
 }
 
 sub copy_doc_fields {

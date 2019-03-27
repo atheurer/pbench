@@ -76,6 +76,13 @@ for my $client (@client_dirs) {
         die "$script_name: could not open client directory: $!\n";
     my @log_files = grep(/fio_([a-z]+)\.(\d+)\.log$/, (sort readdir($client_dh)));
     closedir $client_dh;
+    # Metric docs that are for the same timeseries go into a "newline delimited json"
+    # (ndjson) file instead of individual files because (1) it creates far less
+    # files and (2) is better suited for importing into ES.  The document format
+    # consists of 1 line of action followed by 1 line of json data, matching the
+    # format expected for "_bulk/" action for Elasticsearch.
+    open(NDJSON_FH, ">../../es/metrics/" . $client .  "/metric-" . $period{"period"}{"id"}
+         . "-fio" . ".ndjson");
     for my $log_file (@log_files) {
         if ($log_file =~ /fio_([a-z]+)\.(\d+)\.log$/) {
             my $metric_type = $1;
@@ -106,15 +113,12 @@ for my $client (@client_dirs) {
                                 $value,     # The value of the metric
                                 $timestamp_ms   # The timestamp
                                 );
-			    # Our 'begin' is the smallest amount of time just after the previous
-			    # sample, and since we have a millisecond granularity, it is 1ms.
+                            # Our 'begin' is the smallest amount of time just after the previous
+                            # sample, and since we have a millisecond granularity, it is 1ms.
                             $metric_sample{'metric'}{'begin'} = $last_timestamp_ms + 1;
-                            put_json_file(\%metric_sample, "../../es/metrics/" .
-                                $client .
-                                "/metric-" .
-                                $metric_sample{'metric'}{'id'} .
-                                ".json");
-			}
+                            printf NDJSON_FH "%s\n", '{ "index": {} }';
+                            printf NDJSON_FH "%s\n", to_json(\%metric_sample);
+                        }
                         if (! $earliest_timestamp or $earliest_timestamp > $timestamp_ms) {
                             $earliest_timestamp = $timestamp_ms;
                         }
@@ -128,6 +132,7 @@ for my $client (@client_dirs) {
             }
         }
     }
+    close(NDJSON_FH);
 }
 $period{'period'}{'begin'} = $earliest_timestamp;
 $period{'period'}{'end'} = $latest_timestamp;

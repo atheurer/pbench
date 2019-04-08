@@ -118,8 +118,8 @@ for my $client (@client_dirs) {
                             my %metric_data = create_metric_data_doc(
                                 $metric_desc{'id'},
                                 $value,
-                                $timestamp_ms,
-                                $last_timestamp_ms + 1); 
+                                $last_timestamp_ms + 1, 
+                                $timestamp_ms);
                             printf NDJSON_DATA_FH "%s\n", '{ "index": {} }';
                             printf NDJSON_DATA_FH "%s\n", to_json(\%metric_data);
                         }

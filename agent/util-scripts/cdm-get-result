@@ -16,7 +16,7 @@ BEGIN {
 	$pbench_lib_path .= "/lib";
 }
 use lib "$pbench_lib_path";
-use JSON;
+use JSON::MaybeXS;
 use Data::Dumper;
 use PbenchCDM qw(get_cdm_ver get_cdm_rel);
 use PbenchBase qw(get_json_file put_json_file remove_element);
@@ -70,25 +70,26 @@ my $client = REST::Client->new();
 $client->setHost($es_host);
 
 my $bench_name;
-my $iter_req_ref = from_json($template);
+my $coder = JSON::MaybeXS->new->ascii->canonical;
+my $iter_req_ref = $coder->decode($template);
 push @{ $$iter_req_ref{"query"}{"bool"}{"filter"} },
-     from_json('{"term": {"iteration.id": "' . $iter_id . '"}}');
-my $iter_req_json = to_json($iter_req_ref);
+     $coder->decode('{"term": {"iteration.id": "' . $iter_id . '"}}');
+my $iter_req_json = $coder->encode($iter_req_ref);
 $client->request('GET', $index_basename . "-iteration/iteration/_search",
                  $iter_req_json, \%req_header);
 my $resp = $client->responseContent();
-my $iter_resp_ref = from_json($resp);
+my $iter_resp_ref = $coder->decode($resp);
 $bench_name = $$iter_resp_ref{'hits'}{'hits'}[0]{'_source'}{'run'}{'bench'}{'name'};
 printf "bench_name: %s\n", $bench_name;
 printf "iteration.params: %s\n", $$iter_resp_ref{'hits'}{'hits'}[0]{'_source'}{'iteration'}{'params'};
 # get to get all sample docs for an iteration
-my $samp_req_ref = from_json($iter_req_json);
+my $samp_req_ref = $coder->decode($iter_req_json);
 $$samp_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "iteration.primary_metric";
-my $samp_req_json = to_json($samp_req_ref);
+my $samp_req_json = $coder->encode($samp_req_ref);
 $client->request('GET', $index_basename . "-sample/sample/_search",
                  $samp_req_json, \%req_header);
 my $response = $client->responseContent();
-my $samp_resp_ref = from_json($response);
+my $samp_resp_ref = $coder->decode($response);
 my $primary_metric;
 if (scalar @{ $$samp_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
     $primary_metric = $$samp_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
@@ -103,35 +104,35 @@ my $sum = 0;
 foreach my $samp ( @{ $$samp_resp_ref{'hits'}{'hits'} } ) {
     printf "\n\n  sample.id: %s\n", $$samp{'_source'}{'sample'}{'id'};
     # get the primary period name
-    my $peri_req_ref = from_json($samp_req_json);
+    my $peri_req_ref = $coder->decode($samp_req_json);
     push @{ $$peri_req_ref{"query"}{"bool"}{"filter"} },
-         from_json('{"term": {"period.name": "' . $$samp{'_source'}{'iteration'}{'primary_period'} . '"}}');
+         $coder->decode('{"term": {"period.name": "' . $$samp{'_source'}{'iteration'}{'primary_period'} . '"}}');
     push @{ $$peri_req_ref{"query"}{"bool"}{"filter"} },
-         from_json('{"term": {"sample.id": "' . $$samp{'_source'}{'sample'}{'id'} . '"}}');
-    my $peri_req_json = to_json($peri_req_ref);
+         $coder->decode('{"term": {"sample.id": "' . $$samp{'_source'}{'sample'}{'id'} . '"}}');
+    my $peri_req_json = $coder->encode($peri_req_ref);
     debug_log "getting primary period\n";
     $client->request('GET', $index_basename . "-period/period/_search",
                      $peri_req_json, \%req_header);
     my $resp = $client->responseContent();
-    my $peri_ref = from_json($resp);
+    my $peri_ref = $coder->decode($resp);
     if (exists $$peri_ref{'hits'}{'hits'}[0]) {
         my %peri = %{ $$peri_ref{'hits'}{'hits'}[0] };
         my $period_id = $peri{'_source'}{'period'}{'id'};
         # verify all metrics have same name_format
-        my $metr_req_ref = from_json($samp_req_json);
+        my $metr_req_ref = $coder->decode($samp_req_json);
         push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
-            from_json('{"term": {"period.id": "' . $period_id . '"}}');
+            $coder->decode('{"term": {"period.id": "' . $period_id . '"}}');
         push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
-            from_json('{"term": {"metric_desc.source": "' . $bench_name . '"}}');
+            $coder->decode('{"term": {"metric_desc.source": "' . $bench_name . '"}}');
         push @{ $$metr_req_ref{"query"}{"bool"}{"filter"} },
-            from_json('{"term": {"metric_desc.type": "' . $primary_metric . '"}}');
+            $coder->decode('{"term": {"metric_desc.type": "' . $primary_metric . '"}}');
         $$metr_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "metric_desc.name_format";
-        my $metr_req_json = to_json($metr_req_ref);
+        my $metr_req_json = $coder->encode($metr_req_ref);
         debug_log "getting name_format\n";
         $client->request('GET', $index_basename . "-metric_desc/metric_desc/_search",
                          $metr_req_json, \%req_header);
         my $metr_resp = $client->responseContent();
-        my $metr_resp_ref = from_json($metr_resp);
+        my $metr_resp_ref = $coder->decode($metr_resp);
         if (scalar @{ $$metr_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
             my $name_format = $$metr_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
             # build the nested aggregation based on the field names found in the name_format
@@ -155,16 +156,16 @@ foreach my $samp ( @{ $$samp_resp_ref{'hits'}{'hits'} } ) {
                 $field_count--;
             }
             $aggs_json .= '}';
-            my $aggs_ref = from_json($aggs_json);
+            my $aggs_ref = $coder->decode($aggs_json);
             # now replace the old aggregation with the new one on the request
             $$metr_req_ref{"aggs"} = $$aggs_ref{"aggs"};
-            $metr_req_json = to_json($metr_req_ref);
+            $metr_req_json = $coder->encode($metr_req_ref);
             debug_log "nested agg to find all metric groups\n";
             print "$metr_req_json\n";
             $client->request('GET', $index_basename . "-metric_desc/metric_desc/_search",
                             $metr_req_json, \%req_header);
             my $metr_resp = $client->responseContent();
-            my $metr_resp_ref = from_json($metr_resp);
+            my $metr_resp_ref = $coder->decode($metr_resp);
 
 
             # by traversing the aggrgeations in the response, find all of the different metric groupings
@@ -178,19 +179,19 @@ foreach my $samp ( @{ $$samp_resp_ref{'hits'}{'hits'} } ) {
             foreach my $terms (@metr_grp_terms) {
                 # the next request will start with our base reqeust from the metric request,
                 # where run/iteration/sample/period/metric.source/metric.type
-                my $metr_grp_req_ref = from_json($metr_req_json);
+                my $metr_grp_req_ref = $coder->decode($metr_req_json);
                 # use the term for a specific metric group (specific timeseries)
-                my $metr_grp_terms_ref = from_json('[' . $terms . ']');
+                my $metr_grp_terms_ref = $coder->decode('[' . $terms . ']');
                 # add to, not replace, the existing terms in the filter
                 my @filter = (@{ $$metr_grp_req_ref{"query"}{"bool"}{"filter"} }, @{ $metr_grp_terms_ref});
                 $$metr_grp_req_ref{"query"}{"bool"}{"filter"} = \@filter;
                 delete $$metr_grp_req_ref{"aggs"};
                 $$metr_grp_req_ref{"aggs"}{"source"}{"terms"}{"field"} = "metric_desc.id";
-                my $metr_grp_req_json = to_json($metr_grp_req_ref);
+                my $metr_grp_req_json = $coder->encode($metr_grp_req_ref);
                 $client->request('GET', $index_basename . "-metric_desc/metric_desc/_search",
                                 $metr_grp_req_json, \%req_header);
                 my $metr_grp_resp = $client->responseContent();
-                my $metr_grp_resp_ref = from_json($metr_grp_resp);
+                my $metr_grp_resp_ref = $coder->decode($metr_grp_resp);
                 if (scalar @{ $$metr_grp_resp_ref{"aggregations"}{"source"}{"buckets"} } == 1) {
                     my $metric_id =  $$metr_grp_resp_ref{"aggregations"}{"source"}{"buckets"}[0]{"key"};
                     push $metric_id \@metric_ids;
@@ -207,9 +208,9 @@ exit;
             foreach my $terms (@metr_grp_terms) {
                 # the next request will start with our base reqeust from the metric request,
                 # where run/iteration/sample/period/metric.source/metric.type
-                my $metr_grp_req_ref = from_json($metr_req_json);
+                my $metr_grp_req_ref = $coder->decode($metr_req_json);
                 # use the term for a specific metric group (specific timeseries)
-                my $metr_grp_terms_ref = from_json('[' . $terms . ']');
+                my $metr_grp_terms_ref = $coder->decode('[' . $terms . ']');
                 # add to, not replace, the existing terms in the filter
                 my @filter = (@{ $$metr_grp_req_ref{"query"}{"bool"}{"filter"} }, @{ $metr_grp_terms_ref});
                 $$metr_grp_req_ref{"query"}{"bool"}{"filter"} = \@filter;
@@ -218,12 +219,12 @@ exit;
                 # add 2 new aggregations, one for getting the earliest 'begin' and one for the latest 'end'
                 $$metr_grp_req_ref{"aggs"}{"earliest_begin"}{"min"}{"field"} = "metric_data.begin";
                 $$metr_grp_req_ref{"aggs"}{"latest_end"}{"max"}{"field"} = "metric_data.end";
-                my $metr_grp_req_json = to_json($metr_grp_req_ref);
+                my $metr_grp_req_json = $coder->encode($metr_grp_req_ref);
                 debug_log "find begin and end for $terms\n";
                 $client->request('GET', $index_basename . "-metric_data/metric_data/_search",
                                 $metr_grp_req_json, \%req_header);
                 my $metr_grp_resp = $client->responseContent();
-                my $metr_grp_resp_ref = from_json($metr_grp_resp);
+                my $metr_grp_resp_ref = $coder->decode($metr_grp_resp);
                 my $earliest_begin = $$metr_grp_resp_ref{"aggregations"}{"earliest_begin"}{"value"};
                 if (not defined $latest_begin or $earliest_begin > $latest_begin) {
                     $latest_begin = $earliest_begin;
@@ -242,11 +243,11 @@ exit;
             # $latest_begin, but that document should have its metric.end after the $latest_begin.
             # Same is true if the metric.end is later than the $earliest_end, but the document's
             # metric.begin must be before $earliest_end
-            my $metr_data_req_ref = from_json($metr_req_json);
+            my $metr_data_req_ref = $coder->decode($metr_req_json);
             push @{ $$metr_data_req_ref{"query"}{"bool"}{"filter"} },
-                 from_json('{"range": {"metric.end": { "gte": "' . $latest_begin . '"}}}');
+                 $coder->decode('{"range": {"metric.end": { "gte": "' . $latest_begin . '"}}}');
             push @{ $$metr_data_req_ref{"query"}{"bool"}{"filter"} },
-                 from_json('{"range": {"metric.begin": { "lte": "' . $earliest_end . '"}}}');
+                 $coder->decode('{"range": {"metric.begin": { "lte": "' . $earliest_end . '"}}}');
             delete $$metr_data_req_ref{"aggs"};
             my $get_data_series = 1; # set this to 1 if you want to contsruct a line graph
             if ($get_data_series) { # Not necessary if all you want is a single value
@@ -294,7 +295,7 @@ exit;
             }
             # This is our base request, which we will add to below to get results for a specific metric group
             # For example, for fio, we would have a metric group per host [and possibly per job]
-            my $metr_data_req_json = to_json($metr_data_req_ref);
+            my $metr_data_req_json = $coder->encode($metr_data_req_ref);
             # Now we can get the weighted average per metric group.
             # All of the queries for these metric groups will be bundled into a single "_msearch" query
             my $all_grp_value = 0;
@@ -302,21 +303,21 @@ exit;
             my $msearch_metr_grp_data_req_json = "";
             # This is where we build a _msearch querym 1 query per metric group
             foreach my $terms (@metr_grp_terms) {
-                my $metr_grp_data_req_ref = from_json($metr_data_req_json);
+                my $metr_grp_data_req_ref = $coder->decode($metr_data_req_json);
                 # use the term for a specific metric group (specific timeseries)
-                my $metr_grp_terms_ref = from_json('[' . $terms . ']');
+                my $metr_grp_terms_ref = $coder->decode('[' . $terms . ']');
                 # add to, not replace, the existing terms in the filter
                 my @filter = (@{ $$metr_grp_data_req_ref{"query"}{"bool"}{"filter"} }, @{ $metr_grp_terms_ref});
                 $$metr_grp_data_req_ref{"query"}{"bool"}{"filter"} = \@filter;
                 #print Dumper $metr_grp_data_req_ref;
-                my $metr_grp_data_req_json = to_json($metr_grp_data_req_ref);
+                my $metr_grp_data_req_json = $coder->encode($metr_grp_data_req_ref);
                 # Add tow lines to the ndjson, 1 for the index and 1 for the query
                 $msearch_metr_grp_data_req_json .= '{"index" : "' . $index_basename . '-metric" }' . "\n";
                 $msearch_metr_grp_data_req_json .= "$metr_grp_data_req_json\n";
                 #$client->request('GET', "cdmv" . get_cdm_ver . get_cdm_rel . "-metric/metric/_search",
                 #                 $metr_grp_data_req_json, \%req_header);
                 #my $metr_grp_data_resp = $client->responseContent();
-                #my $metr_grp_data_resp_ref = from_json($metr_grp_data_resp);
+                #my $metr_grp_data_resp_ref = $coder->decode($metr_grp_data_resp);
                 #print Dumper $metr_grp_data_resp_ref;
                 #print Dumper $$metr_grp_data_resp_ref{"aggregations"};
                 # assuming this is a throughput metric class, and so we sum all metric groups
@@ -328,7 +329,7 @@ exit;
                              $msearch_metr_grp_data_req_json, \%req_header);
             my $msearch_metr_grp_data_resp = $client->responseContent();
             debug_log "$msearch_metr_grp_data_resp\n";
-            my $msearch_metr_grp_data_resp_ref = from_json($msearch_metr_grp_data_resp);
+            my $msearch_metr_grp_data_resp_ref = $coder->decode($msearch_metr_grp_data_resp);
             $samples .= sprintf ", %.4f", $all_grp_value;
             $sample_num++;
             $sum += $all_grp_value;

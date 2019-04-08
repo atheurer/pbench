@@ -96,7 +96,7 @@ while (my $line = <IOSTAT_TXT>) {
 				}
 				my %metric_data = create_metric_data_doc($metric_desc{'id'},
 					$sample{$metric_class}{$metric_type},# the value of the metric
-					$timestamp_ms, $last_timestamp_ms + 1);
+					$last_timestamp_ms + 1, $timestamp_ms);
                                 printf NDJSON_DATA_FH "%s\n", '{ "index": {} }';
                                 printf NDJSON_DATA_FH "%s\n", $coder->encode(\%metric_data);
 			}

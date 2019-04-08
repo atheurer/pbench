@@ -10,7 +10,7 @@ use File::Basename;
 use Cwd 'abs_path';
 use Exporter qw(import);
 use List::Util qw(max);
-use JSON::XS;
+use JSON::MaybeXS;
 
 our @EXPORT_OK = qw(get_json_file put_json_file get_benchmark_names get_clients get_pbench_run_dir
                     get_pbench_install_dir get_pbench_config_dir get_pbench_bench_config_dir
@@ -93,13 +93,13 @@ sub remove_params { # remove any parameters with "arg"
 sub get_json_file {
     $sub = "get_json_file()";
     my $filename = shift;
-    my $coder = JSON::XS->new;
-    open(JSON, $filename) || die("$script $sub: could not open file $filename\n");
+    my $coder = JSON::MaybeXS->new;
+    open(JSON_FH, $filename) || die("$script $sub: could not open file $filename\n");
     my $json_text = "";
-    while ( <JSON> ) {
+    while ( <JSON_FH> ) {
         $json_text .= $_;
     }
-    close JSON;
+    close JSON_FH;
     my $perl_scalar  = $coder->decode($json_text);
     return $perl_scalar;
 }
@@ -107,13 +107,11 @@ sub get_json_file {
 sub put_json_file {
     my $doc_ref = shift;
     my $filename = shift;
-    #my $coder = JSON::XS->new->ascii->pretty->allow_nonref;
-    my $coder = JSON::XS->new->ascii->canonical;
-    #my $json_text  = to_json($doc_ref, { ascii => 1, pretty => 1, canonical => 1 } );
+    my $coder = JSON::MaybeXS->new->ascii->canonical;
     my $json_text  = $coder->encode($doc_ref);
-    open(my $fh, ">" . $filename) || die "$script: could not open file $filename: $!\n";
-    printf $fh "%s", $json_text;
-    close($fh);
+    open(JSON_FH, ">" . $filename) || die "$script: could not open file $filename: $!\n";
+    printf JSON_FH "%s", $json_text;
+    close(JSON_FH);
 }
 
 # Find all the benchmarks in the pbench configuraton data

@@ -200,11 +200,9 @@ if ($specs{"controller"}{"post-script"} and $specs{"controller"}{"post-script"} 
                           $specs{"controller"}{"post-script"} . " " . $sample_dir . " " .
                           $base_dir . " " . $tool_group . " " .$last_sample;
     my $pp_cmd_file = $sample_dir . "/postprocess.cmd";
-    printf "creating [%s]\n", $pp_cmd_file;
     open(my $fh_cmd, ">" . $pp_cmd_file);
     printf { $fh_cmd } "%s\n", $postprocess_cmd;
     close($fh_cmd);
-    #my $postprocess_output = `$postprocess_cmd`;
     my $postprocess_output = `. $pp_cmd_file`;
     my $rc = $?;
     open(my $fh_output, ">" . $sample_dir . "/postprocess-output.txt");

@@ -82,7 +82,7 @@ my $cmdfile = $base_bench_dir . "/pbench-run-benchmark.cmd";
 printf "cmdfile: %s\n", $cmdfile;
 open(my $cmd_fh, ">" . $cmdfile) ||
     die "Could not create $cmdfile";
-printf $cmd_fh "pbench-run-benchmark %s ", $benchmark;
+printf $cmd_fh "pbench-run-benchmark %s %s", $benchmark, join(" ", @ARGV);
 
 # Every benchmark must have at least 1 client, even if the client is the same host as the controller
 if (! $params{'clients'}) {
@@ -170,6 +170,7 @@ open(my $fh, ">" . $base_bench_dir . "/iteration-list.txt");
 # (used a "--" in their cmdline).  Each part of the run has it's own run document, 
 # but all of the run documents share the same run ID.
 my $run_part = 0;
+my $nr_pp_jobs = 0;
 while (scalar @param_sets > 0) {
     my $num_samples;
     my $param_set = shift(@param_sets);
@@ -228,19 +229,14 @@ while (scalar @param_sets > 0) {
                 $sample_dirs[$sample_id] = "sample" . $sample_id;
             }
         }
-        #for (my $sample_id=0; $sample_id<$num_samples; $sample_id++) {
-        #for my $sample_dir (@sample_dirs) {
         while (scalar @sample_dirs > 0) {
             my $sample_dir = shift(@sample_dirs);
             print "$sample_dir\n";
-            #mkdir($iteration_dir);
-            #my $iteration_sample_dir = $iteration_dir . "/sample" . $sample_id;
             my $iteration_sample_dir = $iteration_dir . "/" . $sample_dir;
             if (! $pp_only) {
                 mkdir($iteration_sample_dir);
             }
             my $last_sample = "0";
-            #if ($sample_id == ($params{"num_samples"} - 1)) {
             if (scalar @sample_dirs == 0) {
                 $last_sample = "1";
             }
@@ -250,6 +246,7 @@ while (scalar @param_sets > 0) {
                                 " " .  $last_sample . " " . $pp_only;
             if ($pp_only) {
                 print BULK_FH "$benchmark_cmd  &\n";
+                $nr_pp_jobs++;
             } else {
                 my $benchmark_sample_output = `$benchmark_cmd`;
                 my $exit_code = $?;
@@ -263,11 +260,12 @@ while (scalar @param_sets > 0) {
         $iteration_id++;
     }
     if ($pp_only) {
+        print BULK_FH "echo Waiting for $nr_pp_jobs post-processing jobs to finish\n";
         print BULK_FH "wait\n";
         close(BULK_FH);
         system(". ./bulk-sample.sh");
     }
-    $run_doc{'run'}{'end'} = time * 1000; # time in milliseconds
+    $run_doc{'run'}{'end'} = int time * 1000; # time in milliseconds
     put_json_file(\%run_doc, $es_dir . "/run/run" . $run_part . "-" . $run_doc{'run'}{'id'} . ".json");
     %last_run_doc = %run_doc; # We need to keep at least 1 run doc to create the config docs later
     $run_part++;

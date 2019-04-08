@@ -10,7 +10,7 @@ use File::Basename;
 use Cwd 'abs_path';
 use Exporter qw(import);
 use List::Util qw(max);
-use JSON;
+use JSON::XS;
 
 our @EXPORT_OK = qw(get_json_file put_json_file get_benchmark_names get_clients get_pbench_run_dir
                     get_pbench_install_dir get_pbench_config_dir get_pbench_bench_config_dir
@@ -91,34 +91,28 @@ sub remove_params { # remove any parameters with "arg"
 
 # Read a json file and put in hash the return value is a reference
 sub get_json_file {
-    $sub = "get_json()";
+    $sub = "get_json_file()";
     my $filename = shift;
+    my $coder = JSON::XS->new;
     open(JSON, $filename) || die("$script $sub: could not open file $filename\n");
     my $json_text = "";
-    my $junk_mode = 1;
     while ( <JSON> ) {
-        if ($junk_mode) {
-            if ( /(.*)(\{.*)/ ) { # Ignore any junk before the "{"
-                $junk_mode = 0;
-                my $junk = $1;
-                my $not_junk = $2;
-                $json_text = $json_text . $not_junk;
-            }
-        } else {
-                $json_text = $json_text . $_;
-        }
+        $json_text .= $_;
     }
     close JSON;
-    my $perl_scalar = from_json($json_text);
+    my $perl_scalar  = $coder->decode($json_text);
     return $perl_scalar;
 }
 
 sub put_json_file {
     my $doc_ref = shift;
     my $filename = shift;
-    my $json_text  = to_json($doc_ref, { ascii => 1, pretty => 1, canonical => 1 } );
+    #my $coder = JSON::XS->new->ascii->pretty->allow_nonref;
+    my $coder = JSON::XS->new->ascii->canonical;
+    #my $json_text  = to_json($doc_ref, { ascii => 1, pretty => 1, canonical => 1 } );
+    my $json_text  = $coder->encode($doc_ref);
     open(my $fh, ">" . $filename) || die "$script: could not open file $filename: $!\n";
-    print $fh $json_text;
+    printf $fh "%s", $json_text;
     close($fh);
 }
 

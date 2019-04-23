@@ -304,7 +304,7 @@ foreach $client_hostname_dir (@client_hostname_dirs) {
 	}
 	if ($nr_log_files == 0) {
 		print "$script: could not find any result files to process, exiting\n";
-		exit;
+		exit 1;
 	}
 }
 # construct what we have so far in a master workload hash

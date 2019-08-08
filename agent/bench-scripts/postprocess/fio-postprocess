@@ -237,6 +237,7 @@ foreach $client_hostname_dir (@client_hostname_dirs) {
 			my $description_label;
 			my $this_metric;
 			switch ($log_type) {
+
 				case "iops"	{
 							$description_label = "Number of I/O operations sent by client for a period of 1 second";
 							$this_metric = \@iops_sec;

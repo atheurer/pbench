@@ -1,0 +1,6 @@
+#!/bin/bash
+
+echo "uperf-prepare-xmlfile"
+echo "args: $@"
+
+touch /var/lib/pbench-agent/tmp/uperf.xml

@@ -27,6 +27,7 @@ use PbenchCDM        qw(create_bench_iter_sample_doc);
 my $pbench_bench_config_dir = get_pbench_bench_config_dir;
 
 # main program starts here
+printf "pbench-run-benchmark-sample: begin\n";
 
 if (scalar @ARGV < 5) {
     print "You must supply at least the /path/to/iteration-doc.json, results directory, " .
@@ -79,16 +80,11 @@ if (! $pp_only) {
     # pre-benchmark-execution:
     # - verify access to clients and servers by attempting to create the directories
     for my $type (keys %hosts) {
-        if (scalar @{ $hosts{$type} }) {
-            if ($specs{$type} and ${specs}{$type}{"copy-to"}) {
-                my $result;
-                my $rc;
-                my @files = @{ ${specs}{$type}{"copy-to"} };
-                # the end of the dir name gets "-client" or "-server" just in case this host is
-                # also a controller or both client and server
-                $result = create_dir_hosts(\@{ $hosts{$type} }, $sample_dir . "-" .  $type,
-                                           $base_dir);
-            }
+        if (scalar @{ $hosts{$type} }) { # the list of hosts for client or server
+            my $result;
+            # the end of the dir name gets "-client" or "-server" just in case this host is
+            # also a controller or both client and server
+            $result = create_dir_hosts(\@{ $hosts{$type} }, $sample_dir . "-" .  $type,
         }
     }
     # - verify required software on clients and server (todo)
@@ -142,8 +138,12 @@ if (! $pp_only) {
     system("pbench-start-tools --iteration=0 --group=" . $tool_group . " --dir=" . $sample_dir);
             
     # benchmark-execution:
+    print "executing actual benchmark\n";
     for my $type (reverse sort keys %hosts) { # reverse so "server" is first
+        my %env_vars;
+        my $num = 1;
         if ($hosts{$type} and scalar @{ $hosts{$type} }) {
+            $env_vars{'pbench_' . $type . '_num'} = $num;
             my $cmd;
             if ($specs{$type}{"bin"}) {
                 $cmd = $remote_output_wrapper_path . "/" . $output_wrapper_name. " " .
@@ -163,7 +163,8 @@ if (! $pp_only) {
                     $cmd = eval "\$_='$cmd'; $r; return scalar \$_";
                 }
             }
-            my $result = ssh_hosts(\@{ $hosts{$type} }, $cmd, $sample_dir . "-" . $type, $base_dir);
+            my $result = ssh_hosts(\@{ $hosts{$type} }, $cmd, $sample_dir . "-" . $type, $base_dir, \%env_vars);
+        $num++;
         }
     }
 

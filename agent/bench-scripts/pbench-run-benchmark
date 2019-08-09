@@ -334,9 +334,10 @@ while (scalar @param_sets > 0) {
                 print BULK_FH "$benchmark_cmd  &\n";
                 $nr_pp_jobs++;
             } else {
-                my $benchmark_sample_output = `$benchmark_cmd`;
+                my $benchmark_sample_output = `$benchmark_cmd 2>&1`;
                 my $exit_code = $?;
-                print "output:\n$benchmark_sample_output";
+                print "pbench-run-benchmark-sample output:\n$benchmark_sample_output";
+                print "end\n";
                 if ($exit_code != 0) {
                     printf "Stopping because of iteration-sample exit code: %d\n", $exit_code;
                     exit 1;

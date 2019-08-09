@@ -1,0 +1,6 @@
+#!/bin/bash
+
+echo "This is the uperf client launcher" >client-file.txt
+echo "args: $@" >>client-file.txt
+echo "env:" >>client-file.txt
+env >>client-file.txt

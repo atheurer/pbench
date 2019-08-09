@@ -1,0 +1,4 @@
+#!/bin/bash
+
+echo "This is the uperf server launcher" >server-file.txt
+echo "args: $@" >>server-file.txt

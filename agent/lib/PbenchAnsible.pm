@@ -195,11 +195,17 @@ sub ssh_hosts { # run a command on remote hosts
 	my $basedir = shift;
 	my $logdir = get_ansible_logdir($basedir, "ssh_hosts");
 	my $inv_file = build_inventory($hosts_ref, $logdir);
+	my $env_vars_ref = shift;
 	my @tasks;
 	my %task = ( name => "run cmd on hosts", command => $cmd . " chdir=" . $chdir);
 	push(@tasks, \%task);
 	my %play = ( hosts => "all", tasks => \@tasks );;
-	my @playbook = (\%play);;
+	if ($env_vars_ref) {
+		foreach my $env_var (sort keys %$env_vars_ref) {
+			$play{'environment'}{$env_var} = $$env_vars_ref{$env_var};
+		}
+	}
+	my @playbook = (\%play);
 	return run_playbook(\@playbook, $inv_file, $logdir);
 }
 sub copy_files_to_hosts { # copies local files to hosts with a new, common destination path

@@ -4,11 +4,11 @@
     "post-script" : "/opt/pbench-agent/bench-scripts/postprocess/uperf-postprocess-cdm",
     "parameters" : { 
       "defaults": {
-        "basic" : [ "--test-type=stream", "--protocol=tcp", "--message-sizes=16384",
+        "basic" : [ "--test-type=stream", "--protocol=tcp", "--message-size=16384",
           "--instances=1", "--runtime=30"
           ],
         "full" : [ "--test-type=stream,maerts", "--protocol=tcp,udp",
-          "--message-sizes=64,256,1024,4096,16384,32768", "--instances=1,8",
+          "--message-size=64,256,1024,4096,16384,32768", "--instances=1,8",
           "--runtime=30"
           ],
         "mandatory" : []
@@ -16,7 +16,7 @@
       "specs" : {
         "size_KMG" : {
           "description" : "bytes in k/K (1024), m/M (1024^2), g/G (1024^3) or no units: 256 4k 16M 1g",
-          "arguments" : [ "message-size", "message-sizes" ],
+          "arguments" : [ "message-size" ],
        	  "value_regex" : "[0-9]+[kbmgKBZZMG]{0,1}",
        	  "value_transforms" : [ "s/([0-9]+)[gG]/($1*1024).\"M\"/e",
             "s/([0-9]+)[mM]/($1*1024).\"K\"/e", "s/([0-9]+)[kK]/($1*1024)/e"
@@ -30,7 +30,7 @@
         "test-types" : {
           "description" : "all possible uperf test types",
           "arguments" : [ "test-type", "test-types" ],
-          "value_regex" : "^stream$"
+          "value_regex" : "^stream$|^maerts$|^rr$"
           },
         "protocols" : {
           "description" : "all possible protocols",
@@ -65,7 +65,6 @@
     "packages" : [ "pbench-uperf-1.0.4-1" ],
     "pre-script" : " ",
     "post-script" : " ",
-    "copy-to" : [ "/var/lib/pbench-agent/tmp/uperf.xml" ],
     "bin" : "/opt/pbench-agent/bench-scripts/postprocess/uperf-server-launcher",
     "param_regex" : []
   }

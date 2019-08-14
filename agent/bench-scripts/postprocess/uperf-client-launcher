@@ -1,6 +1,33 @@
 #!/bin/bash
 
-echo "This is the uperf client launcher" >client-file.txt
-echo "args: $@" >>client-file.txt
-echo "env:" >>client-file.txt
-env >>client-file.txt
+echo "This is the uperf client launcher"
+echo "args: $@"
+
+uperf_vars=""
+while [ ! -z "$1" ]; do
+	arg=`echo $1 | awk -F= '{print $1}' | sed -e s/^--// -e 's/-/_/g'`
+	val=`echo $1 | awk -F= '{print $2}'`
+	if [ $arg == "message_size" ]; then
+		uperf_vars="$uperf_vars wsize=$val rsize=$val"
+		export wsize=$val
+		export rsize=$val
+	else
+		if [ $arg == "servers" ]; then
+			let field=$pbench_count+1
+			host=`echo $val | cut -d, -f$field`
+			uperf_vars="$uperf_vars remotehost=$host"
+			export remotehost=$val
+		else
+			uperf_vars="$uperf_vars $arg=$val"
+			export $arg=$val
+		fi
+	fi
+	shift
+done
+uperf_vars=`echo $uperf_vars | sed -e 's/^ //'`
+
+
+port=`echo "20000 + 100 * $pbench_count" | bc`
+#duration=30 instances=1 protocol=tcp wsize=1024 remotehost=perf84 /usr/local/bin/uperf -v -m ./uperf.xml -x -a -i 1 -P $port 2>&1 >uperf-client.txt
+echo "uperf_vars: [$uperf_vars]"
+/usr/local/bin/uperf -v -m ./uperf.xml -x -a -i 1 -P $port 2>&1 >uperf-client.txt

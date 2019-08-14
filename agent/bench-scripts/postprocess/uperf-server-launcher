@@ -1,4 +1,9 @@
 #!/bin/bash
 
-echo "This is the uperf server launcher" >server-file.txt
-echo "args: $@" >>server-file.txt
+echo "This is the uperf server launcher"
+echo "args: $@"
+
+port=`echo "20000 + 100 * $pbench_count" | bc`
+touch uperf-server.txt
+echo "/usr/local/bin/uperf -v -s -P $port" >>uperf-server.txt
+/usr/local/bin/uperf -v -s -P $port 2>&1 >>uperf-server.txt

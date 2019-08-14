@@ -1,4 +1,0 @@
-#!/bin/bash
-
-echo "uperf-postprocess-cdm"
-echo "args: $@"

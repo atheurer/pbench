@@ -14,7 +14,7 @@ use lib $ENV{'pbench_lib_dir'};
 use lib $ENV{'pbench_bspp_dir'};
 no lib ".";
 
-use JSON;
+use JSON::XS;
 use File::Basename;
 use Data::Dumper;
 use BenchPostprocess qw(get_label get_uid get_length);
@@ -23,6 +23,7 @@ my $benchmark_name = $ARGV[0];
 my $orig_cmd = $ARGV[1];
 my $benchmark_run_dir = $ARGV[2];
 my %spacing;
+my $coder = JSON::XS->new->ascii->canonical;
 
 opendir(my $dh, $benchmark_run_dir) || die "$script: could not open directory $benchmark_run_dir: $!\n";
 my @dirs = readdir($dh);
@@ -75,7 +76,7 @@ foreach $dir (sort @dirs) {
 				$json_text = $json_text . $_;
 				}
 			close ITERATION_JSON;
-			my $perl_scalar = from_json( $json_text );
+			my $perl_scalar = $coder->decode($json_text);
 			my %iteration = ( $iteration_number_field => int $iter_num, $iteration_name_field => $iter_name, $iteration_data_field => $perl_scalar, $iteration_name_format_field => $iter_name_format );
 			push @iterations, \%iteration;
 		 } else {
@@ -84,7 +85,7 @@ foreach $dir (sort @dirs) {
 	}
 }
 
-my $json_text  = to_json( \@iterations, { ascii => 1, pretty => 1, canonical => 1 } );
+my $json_text  = $coder->encode( \@iterations);
 my $json_file = $benchmark_run_dir . "/result.json";
 open(JSON, ">$json_file") || die "$script: could not open file $json_file: $!\n";
 print JSON $json_text;

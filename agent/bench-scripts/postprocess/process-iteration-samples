@@ -9,11 +9,11 @@ use lib $ENV{'pbench_lib_dir'};
 use lib $ENV{'pbench_bspp_dir'};
 no lib ".";
 use BenchPostprocess qw(get_uid get_label get_cpubusy_series calc_ratio_series calc_sum_series);
+use PbenchBase qw(get_json_file put_json_file);
 use File::Basename;
 use Data::Dumper;
 use List::Util('sum');
 use SigFigs;
-use JSON;
 
 # This script produces a JSON array containing the information for
 # 1 benchmark iteration, wich can include 1 or more run samples.
@@ -160,14 +160,7 @@ foreach $file ( sort readdir($dh) ) {
 		if (!defined($samples_start_index) || ($sample_id < $samples_start_index)) {
 		    $samples_start_index = $sample_id;
 		}
-		my $sample_file = "$dir/sample$sample_id/result.json";
-		open( TXT, "<$sample_file" ) or die "Can't open $sample_file: $!";
-		my $json_text = "";
-		while ( <TXT> ) {
-			$json_text = $json_text . $_;
-			}
-		close TXT;
-		my $perl_scalar = from_json( $json_text, { utf8  => 1 } );
+		my $perl_scalar = get_json_file($dir . "/sample" . $sample_id . "/result.json");
 		push @json_samples, $perl_scalar;
 		}
 }
@@ -302,10 +295,7 @@ if ( $iteration{'throughput'}{$primary_metric} ) {
 
 # Finally write the data in JSON
 my $json_file = $dir . "/result.json";
-my $json_text   = to_json( \%iteration, { ascii => 1, pretty => 1, canonical => 1 } );
-open(JSON, ">$json_file") || die "$script: could not open file $json_file: $!\n";
-print JSON $json_text;
-close(JSON);
+put_json_file(\%iteration, $json_file);
 	
 if ($fail) {
 	print "This iteration's standard deviation percentage was not within $max_stddevpct\n";

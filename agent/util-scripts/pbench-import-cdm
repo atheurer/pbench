@@ -6,12 +6,12 @@ use File::Basename;
 use File::Find;
 
 use lib $ENV{'pbench_lib_dir'};
-use JSON;
+use JSON::XS;
 use Data::Dumper;
 use PbenchCDM qw(get_cdm_ver get_cdm_rel);
 use PbenchBase qw(get_json_file put_json_file remove_element);
 
-my $coder = JSON->new;
+my $coder = JSON::XS->new->ascii->canonical;
 my $count = 0;
 
 sub process_dir {
@@ -39,7 +39,7 @@ sub process_dir {
 					die;
 				}
 				my $json_ref = $coder->decode($output);
-				if ($file_type eq "ndjson" and $$json_ref{'errors'} eq JSON::true) {
+				if ($file_type eq "ndjson" and $$json_ref{'errors'} eq JSON::XS::true) {
 					print "import of $entry failed:\n\n$output\n\n";
 					exit;
 				}

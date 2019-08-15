@@ -9,7 +9,7 @@ use File::Find;
 use REST::Client;
 
 use lib $ENV{'pbench_lib_dir'};
-use JSON::MaybeXS;
+use JSON::XS;
 use Data::Dumper;
 use PbenchCDM qw(get_cdm_ver get_cdm_rel);
 use PbenchBase qw(get_json_file put_json_file remove_element);
@@ -57,7 +57,7 @@ my $client = REST::Client->new();
 $client->setHost($es_host);
 
 my $bench_name;
-my $coder = JSON::MaybeXS->new->ascii->canonical;
+my $coder = JSON::XS->new->ascii->canonical;
 # with run.id get the run doc(s)
 my $run_req_ref = $coder->decode($template);
 push @{ $$run_req_ref{"query"}{"bool"}{"filter"} },

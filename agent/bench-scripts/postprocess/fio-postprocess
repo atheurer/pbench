@@ -7,7 +7,8 @@ use lib $ENV{'pbench_lib_dir'};
 use lib $ENV{'pbench_bspp_dir'};
 no lib ".";
 use GenData qw(gen_data);
-use BenchPostprocess qw(value_exists trim_series get_label create_uid get_mean remove_timestamp get_timestamps write_influxdb_line_protocol get_cpubusy_series calc_ratio_series calc_sum_series div_series calc_aggregate_metrics calc_efficiency_metrics create_graph_hash get_json);
+use PbenchBase qw(get_json_file put_json_file);
+use BenchPostprocess qw(value_exists trim_series get_label create_uid get_mean get_cpubusy_series calc_aggregate_metrics calc_efficiency_metrics create_graph_hash);
 use File::Basename;
 use Data::Dumper;
 use List::Util('sum');
@@ -128,7 +129,7 @@ my %benchmark_params;
 my $fio_results_path = $dir . "/fio-result.txt";
 die "$script: $fio_results_path does not exist!\n" if ! -f $fio_results_path;
 die "$script: $fio_results_path is empty!\n" if -z $fio_results_path;
-my $fio_results_scalar = get_json($fio_results_path);
+my $fio_results_scalar = get_json_file($fio_results_path);
 if ($fio_results_scalar == 0) {
 	die "$script: Failed to read valid JSON from $fio_results_path!\n";
 }
@@ -345,9 +346,4 @@ my %graph_type;
 gen_data(\%graph, \%graph_type, \%graph_threshold, $dir, 1);
 
 # write to JSON format file
-my $json_file = $dir . "/result.json";
-my $json_text   = to_json( \%workload, { ascii => 1, pretty => 1, canonical => 1 } );
-open(JSON, ">$json_file") || die "$script: could not open file $json_file: $!\n";
-print JSON $json_text;
-close(JSON);
-
+put_json_file(\%workload, $dir . "/result.json");

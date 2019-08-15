@@ -18,7 +18,7 @@ use File::Basename;
 use File::Path qw(remove_tree);
 my $pbench_install_dir = $ENV{'pbench_install_dir'};
 use lib $ENV{'pbench_lib_dir'};
-use JSON;
+use JSON::XS;
 use Data::Dumper;
 use PbenchCDM        qw(create_run_doc create_config_osrelease_doc create_config_cpuinfo_doc
                         create_config_netdevs_doc create_config_ethtool_doc create_config_base_doc
@@ -34,6 +34,7 @@ use PbenchAnsible    qw(ssh_hosts ping_hosts copy_files_to_hosts copy_files_from
 my %defaults = ( "num-samples" => 1,
                  "tool-group" => "default" );
 
+my $coder = JSON::XS->new->ascii->canonical;
 my $pp_only = 0;
 my $base_bench_dir = "";
 
@@ -383,7 +384,7 @@ if (-e $base_bench_dir . "/stockpile.json") {
     while (<$scribe_fh>) {
         $json_text .= $_;
         if (/^\}/) { # Assume this is the end of a json doc
-            my %config_doc = create_config_doc(\%last_run_doc, from_json($json_text));
+            my %config_doc = create_config_doc(\%last_run_doc, $coder->decode($json_text));
             if ($config_doc{'cdm'}{'doctype'} =~ /^config_(.+)/) {
                 my $config_subname = $1;
                 if (exists $config_doc{'config'}{'id'}) {

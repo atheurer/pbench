@@ -10,7 +10,7 @@ use File::Basename;
 use Cwd 'abs_path';
 use Exporter qw(import);
 use List::Util qw(max);
-use JSON;
+use JSON::XS;
 use Data::Dumper;
 use PbenchAnsible    qw(ssh_hosts ping_hosts copy_files_to_hosts copy_files_from_hosts
                         remove_files_from_hosts remove_dir_from_hosts create_dir_hosts
@@ -85,7 +85,7 @@ sub create_run_doc {
     $doc{'run'}{'tool_names'} = shift; # List tool names like sar, mpstat
     $doc{'run'}{'tool_names'} =~ s/,/ /g if (defined($doc{'run'}{'tool_names'}));
     $doc{'run'}{'host'} = get_hostname; # Hostname of this controller system
-    $doc{'run'}{'ignore'} = JSON::false; # Set to true later if run should be ingnored in queries
+    $doc{'run'}{'ignore'} = JSON::XS::false; # Set to true later if run should be ingnored in queries
     $doc{'run'}{'begin'} = int time * 1000;
     $doc{'run'}{'id'} = get_uuid;
     $doc{'cdm'}{'doctype'} = 'run';
@@ -286,7 +286,7 @@ sub gen_cdm_metric_data {
     my $tool = shift;
     my $nr_samples = 0;
     my $nr_condensed_samples = 0;
-    my $coder = JSON->new->ascii->canonical;
+    my $coder = JSON::XS->new->ascii->canonical;
     my $json_ref = get_json_file($period_doc_path);
     my %period_doc = %$json_ref; # this is the CDM doc for the run
     open(NDJSON_DESC_FH, ">" . $es_dir . "/metrics/" . $hostname .  "/metric_desc-" . $period_doc{"period"}{"id"} . "-" . $tool . ".ndjson");

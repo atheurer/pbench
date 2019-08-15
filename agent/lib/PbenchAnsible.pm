@@ -19,11 +19,12 @@ use Cwd 'abs_path';
 use Exporter qw(import);
 use List::Util qw(max);
 use Data::Dumper;
-use JSON;
-use PbenchBase qw(get_hostname);
+use JSON::XS;
+use PbenchBase qw(get_hostname put_json_file);
 our @EXPORT_OK = qw(ssh_hosts ping_hosts copy_files_to_hosts copy_files_from_hosts remove_files_from_hosts remove_dir_from_hosts create_dir_hosts sync_dir_from_hosts verify_success stockpile_hosts yum_install_hosts);
 
 my $script = "PbenchAnsible.pm";
+my $coder = JSON::XS->new->ascii->canonical;
 my $sub;
 my $ansible_bin = "ansible";
 my $ansible_playbook_bin = "ansible-playbook";
@@ -34,7 +35,7 @@ my $ansible_playbook_cmdline = $ansible_playbook_bin;
 sub verify_success {
 	my $text_data = shift;
 	$text_data =~ s/^[^\{]*//; # remove any junk before actual json
-	my $data_ref = from_json($text_data);
+	my $data_ref = $coder->decode($text_data);
 	my %stats = %{ $$data_ref{"stats"}};
 	for my $host (keys %stats) {
 		if ((exists $stats{$host}{"failures"} and $stats{$host}{"failures"} > 0) or
@@ -99,9 +100,7 @@ sub build_playbook { # create the playbok file
 	my $logdir = shift;
 	my $fh;
 	my $file = $logdir . "/playbook.json";
-	open($fh, ">", $file) or die "Could not create the playbook file $file";
-	printf $fh "%s", to_json( $playbook_ref, { ascii => 1, pretty => 1, canonical => 1 } );
-	close $fh;
+	put_json_file($playbook_ref, $file);
 	return $file;
 }
 sub run_playbook { # execute a playbook
@@ -153,10 +152,10 @@ sub stockpile_hosts { # run stockpile against these hosts
 	my %play;
 	my @playbook;
 	my @roles1 = qw(cpu_vulnerabilities yum_repos);
-	my %play1 = ( "hosts" => "all", "remote_user" => "root", "become" => JSON::true, "roles" => \@roles1);
+	my %play1 = ( "hosts" => "all", "remote_user" => "root", "become" => JSON::XS::true, "roles" => \@roles1);
 	push(@playbook, \%play1);
 	my @roles2 = qw(dump-facts);
-	my %play2 = ( "hosts" => "stockpile", "gather_facts" => JSON::false, "remote_user" => "root", "roles" => \@roles2);
+	my %play2 = ( "hosts" => "stockpile", "gather_facts" => JSON::XS::false, "remote_user" => "root", "roles" => \@roles2);
 	push(@playbook, \%play2);
 	return run_playbook(\@playbook, $inv_file, $logdir, $extra_vars);
 }

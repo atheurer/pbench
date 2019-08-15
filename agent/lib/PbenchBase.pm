@@ -10,7 +10,7 @@ use File::Basename;
 use Cwd 'abs_path';
 use Exporter qw(import);
 use List::Util qw(max);
-use JSON;
+use JSON::XS;
 
 our @EXPORT_OK = qw(get_json_file put_json_file get_benchmark_names get_clients get_pbench_run_dir
                     get_pbench_install_dir get_pbench_config_dir get_pbench_bench_config_dir
@@ -19,6 +19,7 @@ our @EXPORT_OK = qw(get_json_file put_json_file get_benchmark_names get_clients 
                     metadata_log_end_run metadata_log_record_iteration);
 
 my $script = "PbenchBase.pm";
+my $coder = JSON::XS->new->ascii->canonical;
 
 sub get_hostname {
     my $hostname = `hostname -s`;
@@ -93,22 +94,20 @@ sub remove_params { # remove any parameters with "arg"
 # Read a json file and put in hash the return value is a reference
 sub get_json_file {
     my $filename = shift;
-    my $coder = JSON->new;
     open(JSON_FH, $filename) || die("$script: could not open file $filename\n");
     my $json_text = "";
     while ( <JSON_FH> ) {
         $json_text .= $_;
     }
     close JSON_FH;
-    my $perl_scalar  = $coder->decode($json_text);
+    my $perl_scalar = $coder->decode($json_text);
     return $perl_scalar;
 }
 
 sub put_json_file {
     my $doc_ref = shift;
     my $filename = shift;
-    my $coder = JSON->new->ascii->canonical;
-    my $json_text  = $coder->encode($doc_ref);
+    my $json_text = $coder->encode($doc_ref);
     open(JSON_FH, ">" . $filename) || die "$script: could not open file $filename: $!\n";
     printf JSON_FH "%s", $json_text;
     close(JSON_FH);

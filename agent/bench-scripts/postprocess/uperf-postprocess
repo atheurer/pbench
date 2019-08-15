@@ -7,11 +7,12 @@ use lib $ENV{'pbench_lib_dir'};
 use lib $ENV{'pbench_bspp_dir'};
 no lib ".";
 use GenData qw(gen_data);
-use BenchPostprocess qw(trim_series get_label create_uid get_mean remove_timestamp get_timestamps write_influxdb_line_protocol get_cpubusy_series calc_ratio_series calc_sum_series div_series calc_aggregate_metrics calc_efficiency_metrics create_graph_hash);
+use PbenchBase qw(put_json_file);
+use BenchPostprocess qw(trim_series get_label create_uid get_mean get_cpubusy_series calc_aggregate_metrics calc_efficiency_metrics create_graph_hash);
 use File::Basename;
 use Data::Dumper;
 use List::Util('sum');
-use JSON;
+use JSON::XS;
 
 sub mean {
 	if ( scalar @_ > 0 ) {
@@ -385,9 +386,5 @@ if ($nr_resp_files > 0) {
 
 
 # write to JSON format file
-my $json_file = $dir . "/result.json";
-my $json_text   = to_json( \%workload, { ascii => 1, pretty => 1, canonical => 1 } );
-open(JSON, ">$json_file") || die "$script: could not open file $json_file: $!\n";
-print JSON $json_text;
-close(JSON);
+put_json_file(\%workload, $dir . "/result.json");
 

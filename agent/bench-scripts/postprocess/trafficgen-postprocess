@@ -18,9 +18,10 @@ use BenchPostprocess qw(trim_series get_label create_uid get_mean remove_timesta
 use File::Basename;
 use Data::Dumper;
 use List::Util('sum');
-use JSON;
+use JSON::XS;
 
 my $script_name = basename($0);
+my $coder = JSON::XS->new->ascii->canonical;
 
 # This script produces a JSON format of a benchmark iteration sample,
 # and uses the standard metric types for pbench, which are:
@@ -171,7 +172,7 @@ while ( <TXT> ) {
 	$json_text = $json_text . $_;
 }
 close TXT;
-my $json_result = from_json($json_text);
+my $json_result = $coder->decode($json_text);
 my %last_trial = %{ $$json_result{'trials'}[-1] };
 
 #print Dumper $json_result;
@@ -613,7 +614,7 @@ foreach my $key (keys %{$graph{'trafficgen'}}) {
 }
 gen_data(\%graph, \%graph_type, \%graph_threshold, $dir, 1);
 
-$json_text   = to_json( \%workload, { ascii => 1, pretty => 1 } );
+$json_text   = $coder->encode(\%workload);
 open(JSON, ">$json_file") || die "$script: could not open file $json_file: $!\n";
 print JSON $json_text;
 close(JSON);

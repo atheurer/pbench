@@ -5,7 +5,7 @@ use warnings;
 use File::Basename;
 my $pbench_install_dir = $ENV{'pbench_install_dir'};
 use lib $ENV{'pbench_lib_dir'};
-use JSON;
+use JSON::XS;
 use Data::Dumper;
 use PbenchCDM qw(create_metric_desc_doc create_metric_data_doc create_bench_iter_sample_period_doc);
 use PbenchBase qw(get_json_file put_json_file remove_element);
